@@ -1,167 +1,156 @@
 ---
 name: provision-cloud-agent
 description: >
-  Provision a cloud-hosted, always-on Flow agent: a Railway container service
-  running Claude Code and the flow-agent-bridge daemon, with a persistent
-  volume, GitHub access, and a repo checkout as the agent's working directory.
-  Use when asked to "provision a cloud agent", "run an agent in the cloud",
-  "set up a devbox agent", "host the bridge on Railway", or to give a Flow
-  workspace an agent that stays online without a local machine.
+  Provision an always-on cloud-hosted coding agent: pick a host platform
+  (Railway today; pluggable for Fly.io, AWS, …), deploy a dev machine image
+  with durable storage, install a coding agent (Claude Code, Codex, or
+  OpenCode), wire it to a control plane (Flow today), give it GitHub access
+  and the current repo, sync selected env vars from the local machine, and
+  hand it a bootstrap task. Use when asked to "provision a cloud agent",
+  "run an agent in the cloud", "set up a devbox agent", or similar.
 ---
 
-# Provision a cloud-running Flow agent
+# Provision a cloud-running coding agent
 
-The result: a Railway service in an existing project that boots the
-`mcr.microsoft.com/devcontainers/universal:2` image, restores its tools from a
-persistent volume, and runs `flow-agent-bridge` as its main process. The agent
-shows online in Flow around the clock, answers @-mentions and DMs with Claude
-Code, and can read and push to GitHub. Everything that matters lives on the
-volume, so redeploys are safe.
+The result: a machine on a cloud host that boots a dev image, restores its
+tools from durable storage, runs a coding agent connected to a control plane
+(so humans can talk to it), and holds a working checkout of the current repo
+with GitHub access and the env vars it needs to run the app and its tests.
 
-## Inputs to collect first
+The workflow is a spine of seven stages. Stages 1, 3, and 4 are **pluggable**:
+each option is a reference file implementing a small contract, and adding a
+platform means writing a new reference — not changing this file.
 
-| Input | Where it comes from |
-|---|---|
-| Agent name + handle (e.g. `RW1` / `rw1`) | the user |
-| Flow invite code (`flow-XXXX-XXXX`) | user clicks **Invite your Agent** in the Flow sidebar. One-time use — do not waste it on a dry run |
-| Claude token (`sk-ant-oat01-…`) | **the user runs** `claude setup-token` (browser approval). The CLI prints the token at the end — NOT the shorter code shown in the browser mid-flow; that code is pasted back into the CLI, and a value that does not start with `sk-ant-oat01-` is the wrong thing |
-| GitHub token (optional) | the user's local `gh auth token` |
-| Railway project + environment | `railway status --json` in the linked repo, or ask |
-| Repo to check out as the agent's cwd | the user; cwd is the agent's identity |
+## Stage 0 — Decisions (collect before touching anything)
 
-Secrets should not pass through the conversation: have the user run the
-`railway variable set` commands themselves (`$(gh auth token)` and the pasted
-Claude token expand locally and never get printed).
+Ask the user (or read from their request):
 
-## Known traps (why the steps look the way they do)
+| Decision | Options today | Reference |
+|---|---|---|
+| Host platform | `railway` (implemented); `fly`, `aws` (contract below, not yet written) | `references/hosts/<host>.md` |
+| Coding agent | `claude`, `codex`, `opencode` | `references/agents/<agent>.md` |
+| Control plane | `flow` (implemented); `none` (SSH-only box) | `references/control-planes/<plane>.md` |
+| Repo | default: the current checkout's `git remote get-url origin` | — |
+| Env vars to sync | user selects from the local environment (Stage 6) | `scripts/copy-env-vars.sh` |
 
-- **`railway environment edit --service-config … ` silently no-ops** ("No
-  changes to apply") on current CLIs. Use the GraphQL API for the image and
-  start command. The `use-railway` skill's `railway-api.sh` helper reads the
-  token from `.user.token` in `~/.railway/config.json`; newer CLIs store it at
-  `.user.accessToken` — use a copy with `.user.accessToken // .user.token`.
-  A "Not Authorized" GraphQL error means the access token expired: run any
-  CLI command (e.g. `railway whoami`) to refresh it, then retry.
-- **Railway runs the container as root**, and Claude Code refuses
-  `--dangerously-skip-permissions` as root (the bridge passes that flag). The
-  start command must drop to the image's `codespace` user for the bridge.
-- **Everything outside the volume is wiped on every redeploy**, and setting a
-  variable triggers a redeploy. All installs and state go under `/workspaces`.
-- **`npm install -g` without `--prefix`** lands in the image's nvm directory
-  (ephemeral). Do not set `NPM_CONFIG_PREFIX` globally either — it breaks the
-  image's nvm shell init. Always pass `--prefix /workspaces/.npm-global`.
-- **The universal image has no long-running process** — without a start
-  command override the service exits immediately.
+**Compatibility check**: the control plane constrains the agent. The Flow
+bridge today runs `claude` fully; its `codex` harness is a stub and it has no
+`opencode` harness. If the user picks Flow + a non-Claude agent, say so and
+offer: Claude for the control plane now, the other agent side-by-side for SSH
+use.
 
-## Steps
+Also collect the agent's name/handle, and the secrets the user must generate
+themselves (each agent reference says which). **Secrets never pass through the
+conversation**: the user runs the commands that read or paste them
+(`$(gh auth token)` etc. expand locally and are never printed).
 
-Substitute `<SVC>` (service name), `<HANDLE>`, ids as appropriate. Project and
-environment ids below come from `railway status --json`.
+## Stage 1 — Provision the machine (host reference)
 
-### 1. Service + volume
+Load `references/hosts/<host>.md` and follow its Provision section: create the
+compute unit, attach **durable storage**, set the machine image, and give it a
+start command that (a) restores tools from durable storage on every boot and
+(b) falls back to an idle keep-alive (`sleep infinity`) when the agent isn't
+configured yet, so the box is always reachable.
+
+### Host contract (what a host reference must provide)
+
+A new host platform is usable when its reference documents how to:
+
+1. **Provision** a container/VM from a public Docker image.
+2. **Attach durable storage** at a stable path (canonically `/workspaces`)
+   that survives restarts and redeploys.
+3. **Set the boot/start command** and restart the machine.
+4. **Set environment variables** (and note whether changes restart the box).
+5. **Open a shell** on the box (SSH or equivalent).
+6. **Read logs** and **verify a deploy reached a running state** — never
+   report success without observing it.
+7. State its **quirks**: run-as-root or not, what's wiped on restart, CLI bugs.
+
+## Stage 2 — Durability + coding agent
+
+On the box (host's shell access), everything long-lived goes under the durable
+mount. Canonical layout:
+
+```
+/workspaces/
+  .npm-global/   # node-installed CLIs (the agents live here)
+  .python/       # PYTHONUSERBASE
+  .claude/ | .codex/ | .opencode/   # agent config/state (per agent reference)
+  .gitconfig     # via GIT_CONFIG_GLOBAL
+  <handle>/      # control-plane config (e.g. agent.json)
+  projects/      # repo checkouts — the agent's working world
+```
+
+Load `references/agents/<agent>.md` and follow it: install the CLI into the
+durable prefix, set its auth env var (user-generated token), set its
+config-dir env var so state persists, and note its privilege rules (Claude
+refuses permission-bypass mode as root — the start command must drop to a
+non-root user).
+
+Verify: run the agent headlessly on the box with a trivial prompt and see a
+real reply before going further.
+
+## Stage 3 — Control plane
+
+Load `references/control-planes/<plane>.md`. The control plane is what turns
+"a CLI on a box" into "a teammate you can message". It must cover: one-time
+registration (identity + token, stored on durable storage), running its daemon
+as the box's supervised main process (as a non-root user), and how humans
+reach the agent (mentions, DMs, reset/restart commands).
+
+For `none`: skip; the box keeps its idle keep-alive and you use it over SSH.
+
+## Stage 4 — GitHub access + repo checkout
+
+1. The **user** copies their GitHub token to the host's env (host reference's
+   set-variable mechanism): `... "GH_TOKEN=$(gh auth token)"`. Warn: host env
+   vars are visible to anyone with access to the hosting project.
+2. On the box: `gh auth setup-git` (wires git's HTTPS credential helper),
+   `git config --global user.name/email`, both persisting via
+   `GIT_CONFIG_GLOBAL` on the durable mount.
+3. Determine the repo from the local checkout: `git remote get-url origin`
+   (convert `git@github.com:owner/repo.git` → `https://github.com/owner/repo`
+   since the box authenticates over HTTPS). Clone into
+   `/workspaces/projects/<repo>`. Point the agent/control-plane `cwd` at it —
+   **cwd is the agent's identity**.
+
+## Stage 5 — Sync env vars from the local machine
+
+The app in the repo usually needs env vars (database URLs, API keys) that
+exist locally. Run `scripts/copy-env-vars.sh`:
 
 ```sh
-railway add --service <SVC> --json            # ALWAYS --json
-railway volume -s <service-id> -e <env-id> add -m /workspaces --json
+scripts/copy-env-vars.sh --host railway --target <service> NAME1 NAME2 …
 ```
 
-### 2. Image and start command (GraphQL — see traps)
+It copies each named variable from the local environment (or a `--env-file`)
+to the host without printing values. Ask the user which variables the app
+needs — propose a list by reading the repo's `.env.example`, compose files, or
+config docs, and let the user approve it. Never sync wholesale: local
+environments hold secrets the box shouldn't have.
 
-Set via `serviceInstanceUpdate`, then deploy with `serviceInstanceDeployV2`:
+## Stage 6 — Bootstrap task: hand the work to the remote agent
 
-```graphql
-mutation update($serviceId: String!, $environmentId: String, $input: ServiceInstanceUpdateInput!) {
-  serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
-}
-```
+Finish by making the *remote agent* prove the setup. Send it (via the control
+plane, or headless CLI if `none`) a bootstrap task:
 
-`input.source = {"image": "mcr.microsoft.com/devcontainers/universal:2"}` and
-`input.startCommand` = the bootstrap below (one line; build the JSON with a
-script, not by hand-escaping):
+> Clone is at `/workspaces/projects/<repo>`. Get the app running: install
+> dependencies, run the test suite, and start the app. Then verify it in a
+> browser — install a headless browser (e.g. `npx playwright install
+> chromium --with-deps`) if none is present, load the app's main page, and
+> report what you see plus any failures.
 
-```sh
-bash -c '
-mkdir -p /workspaces/.npm-global /workspaces/.python /workspaces/.claude /workspaces/projects;
-grep -q "# persist-path" /home/codespace/.bashrc 2>/dev/null || \
-  printf "\n# persist-path\nexport PATH=/workspaces/.npm-global/bin:/workspaces/.python/bin:\$PATH\n" >> /home/codespace/.bashrc;
-export PATH=/workspaces/.npm-global/bin:$PATH;
-command -v claude >/dev/null 2>&1 || npm install -g --prefix /workspaces/.npm-global @anthropic-ai/claude-code;
-command -v flow-agent-bridge >/dev/null 2>&1 || npm install -g --prefix /workspaces/.npm-global flow-agent-bridge;
-chown -R codespace:codespace /workspaces;
-if [ -f /workspaces/<HANDLE>/agent.json ]; then
-  cd /workspaces/<HANDLE> && exec sudo -E -u codespace env HOME=/home/codespace PATH=$PATH \
-    /workspaces/.npm-global/bin/flow-agent-bridge run agent.json;
-else sleep infinity; fi'
-```
-
-The `sleep infinity` fallback keeps the box reachable over SSH before the
-agent is registered (and if `agent.json` ever disappears).
-
-### 3. Variables
-
-```sh
-railway variable set --skip-deploys --service <SVC> \
-  CLAUDE_CONFIG_DIR=/workspaces/.claude \
-  PYTHONUSERBASE=/workspaces/.python \
-  GIT_CONFIG_GLOBAL=/workspaces/.gitconfig
-# The user runs these two (keeps secrets out of the transcript):
-railway variable set --service <SVC> CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
-railway variable set --service <SVC> "GH_TOKEN=$(gh auth token)"
-```
-
-Warn the user: service variables are visible to every member of the Railway
-project. Wait for the triggered redeploy to reach SUCCESS (poll
-`railway deployment list --service <SVC> --json`; never report success before
-seeing it).
-
-### 4. Register the agent (one-time, on the box)
-
-```sh
-railway ssh --service <SVC> -- bash -c '
-export PATH=/workspaces/.npm-global/bin:$PATH
-mkdir -p /workspaces/<HANDLE> /workspaces/projects
-cd /workspaces/<HANDLE>
-timeout 45 flow-agent-bridge --invite <INVITE-CODE> --name <NAME> --handle <HANDLE> \
-  --harness claude --cwd /workspaces/projects/<REPO>
-ls -l agent.json'
-```
-
-The redemption is immediate (no approval step); the daemon it starts dies with
-the timeout, which is fine — the start command owns the daemon from here.
-`agent.json` holds the token: it must be on the volume, chmod 600. Do not cat
-it.
-
-### 5. Give the agent its repo
-
-```sh
-railway ssh --service <SVC> -- bash -c '
-git clone https://<REPO-URL> /workspaces/projects/<REPO>
-git config --global user.name "<NAME>"; git config --global user.email "<EMAIL>"
-gh auth setup-git'
-```
-
-(`gh` reads `GH_TOKEN` from the environment; `setup-git` wires git's HTTPS
-credential helper. `GIT_CONFIG_GLOBAL` makes it persist.)
-
-### 6. Deploy and verify — all three, not just the first
-
-1. `serviceInstanceDeployV2`, poll until `SUCCESS`.
-2. `railway logs --service <SVC>` shows
-   `[bridge …] <NAME> <@id> online in "<workspace>" … cwd=/workspaces/projects/<REPO>`.
-3. `railway ssh --service <SVC> -- ps -o user,cmd -C node` shows the bridge
-   owned by `codespace`, **not root** — root here means the agent will error
-   on its first real message even though it shows online.
-
-Then have the user @-mention the agent in Flow as the true end-to-end test.
+Its report is the real end-to-end verification: it exercises the agent auth,
+the control plane, GitHub access, the checkout, and the synced env vars in one
+shot. Relay the outcome to the user, including anything the agent could not
+make work (missing vars, services it can't reach from the box).
 
 ## Day-2 notes
 
-- Users can send the agent `/reset` (fresh conversation), `/restart`, and
-  `/update` (bridge self-updates and restarts) inside Flow.
-- The repo checkout drifts; tell the agent to `git pull`, or add a pull to the
-  start command.
-- Grow the volume or add apt packages? Volume: Railway dashboard. Apt: bake a
-  custom image instead of installing on every boot.
-- Lost `agent.json`: `flow-agent-bridge login` re-mints the token (revokes the
-  old one). Lost the Claude token: `claude setup-token` again, update the
-  variable.
+- Control-plane daemons usually support in-band `/reset`, `/restart`,
+  `/update` commands — see the plane's reference.
+- The checkout drifts behind the default branch; tell the agent to
+  `git pull`, or add a pull to the start command.
+- Rotating a token = update the host env var (user-run) + restart.
+- Recurring apt/system packages → bake a custom image instead of installing
+  on every boot.

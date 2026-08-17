@@ -21,4 +21,20 @@ ln -s "$PWD/flow-skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-
 
 | Skill | What it does |
 |---|---|
-| [provision-cloud-agent](provision-cloud-agent/SKILL.md) | Provision an always-on Flow agent on Railway: devcontainer image, persistent volume, flow-agent-bridge daemon running Claude Code as a workspace member. |
+| [provision-cloud-agent](provision-cloud-agent/SKILL.md) | Provision an always-on cloud coding agent: pluggable host (Railway today), pluggable coding agent (Claude / Codex / OpenCode), pluggable control plane (Flow today), GitHub access + repo checkout, env-var sync, and an agent-run bootstrap verification. |
+
+### provision-cloud-agent layout
+
+```
+provision-cloud-agent/
+  SKILL.md                      # the workflow spine + plugin contracts
+  references/
+    hosts/railway.md            # host plugins (add fly.md, aws.md here)
+    agents/{claude,codex,opencode}.md
+    control-planes/flow.md      # control-plane plugins
+  scripts/
+    copy-env-vars.sh            # local env → host env, values never printed
+```
+
+Adding a platform = adding one reference file that satisfies the contract in
+SKILL.md; the spine doesn't change.
