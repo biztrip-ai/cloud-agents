@@ -1,4 +1,4 @@
-# flow-skills
+# cloud-agents
 
 Agent skills for working with [Flow](https://github.com/freeflow-community/flow).
 Each directory under `skills/` is one skill in the standard Claude Code layout
@@ -12,8 +12,8 @@ Clone the repo and symlink (or copy) the skills you want into a skills
 directory Claude Code reads:
 
 ```sh
-git clone git@github.com:freeflow-community/flow-skills.git
-ln -s "$PWD/flow-skills/skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-agent
+git clone git@github.com:freeflow-community/cloud-agents.git
+ln -s "$PWD/cloud-agents/skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-agent
 ```
 
 - `~/.claude/skills/` — personal, available in every project
