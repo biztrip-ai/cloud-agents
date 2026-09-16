@@ -1,8 +1,10 @@
 # flow-skills
 
 Agent skills for working with [Flow](https://github.com/freeflow-community/flow).
-Each directory is one skill in the standard Claude Code layout
-(`<name>/SKILL.md`, plus optional `references/` and `scripts/`).
+Each directory under `skills/` is one skill in the standard Claude Code layout
+(`<name>/SKILL.md`, plus optional `references/` and `scripts/`). The repo's
+`.claude/skills` is a symlink to `skills/`, so every skill is available when
+running Claude Code inside this repo.
 
 ## Using these skills
 
@@ -11,7 +13,7 @@ directory Claude Code reads:
 
 ```sh
 git clone git@github.com:freeflow-community/flow-skills.git
-ln -s "$PWD/flow-skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-agent
+ln -s "$PWD/flow-skills/skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-agent
 ```
 
 - `~/.claude/skills/` — personal, available in every project
@@ -21,12 +23,12 @@ ln -s "$PWD/flow-skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-
 
 | Skill | What it does |
 |---|---|
-| [provision-cloud-agent](provision-cloud-agent/SKILL.md) | Provision an always-on cloud coding agent: pluggable host (Railway, AWS EC2), pluggable coding agent (Claude / Codex / OpenCode), pluggable control plane (Flow, Bizzybot/Slack), GitHub access + repo checkout, env-var sync, and an agent-run bootstrap verification. |
+| [provision-cloud-agent](skills/provision-cloud-agent/SKILL.md) | Provision an always-on cloud coding agent: pluggable host (Railway, AWS EC2), pluggable coding agent (Claude / Codex / OpenCode), pluggable control plane (Flow, Bizzybot/Slack), GitHub access + repo checkout, env-var sync, and an agent-run bootstrap verification. |
 
 ### provision-cloud-agent layout
 
 ```
-provision-cloud-agent/
+skills/provision-cloud-agent/
   SKILL.md                      # the workflow spine + plugin contracts
   references/
     hosts/{railway,aws}.md      # host plugins (add fly.md here)
