@@ -21,7 +21,7 @@ ln -s "$PWD/flow-skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-
 
 | Skill | What it does |
 |---|---|
-| [provision-cloud-agent](provision-cloud-agent/SKILL.md) | Provision an always-on cloud coding agent: pluggable host (Railway today), pluggable coding agent (Claude / Codex / OpenCode), pluggable control plane (Flow today), GitHub access + repo checkout, env-var sync, and an agent-run bootstrap verification. |
+| [provision-cloud-agent](provision-cloud-agent/SKILL.md) | Provision an always-on cloud coding agent: pluggable host (Railway, AWS EC2), pluggable coding agent (Claude / Codex / OpenCode), pluggable control plane (Flow, Bizzybot/Slack), GitHub access + repo checkout, env-var sync, and an agent-run bootstrap verification. |
 
 ### provision-cloud-agent layout
 
@@ -29,11 +29,13 @@ ln -s "$PWD/flow-skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-
 provision-cloud-agent/
   SKILL.md                      # the workflow spine + plugin contracts
   references/
-    hosts/railway.md            # host plugins (add fly.md, aws.md here)
+    hosts/{railway,aws}.md      # host plugins (add fly.md here)
     agents/{claude,codex,opencode}.md
-    control-planes/flow.md      # control-plane plugins
+    control-planes/{flow,bizzybot}.md   # control-plane plugins
+    access/eks-readonly-and-db.md       # add-on: read-only EKS + prod DB, box outside the VPC
   scripts/
     copy-env-vars.sh            # local env → host env, values never printed
+    aws-user-data.sh            # EC2 cloud-init: packages, /workspaces, agent.service
 ```
 
 Adding a platform = adding one reference file that satisfies the contract in

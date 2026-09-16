@@ -2,9 +2,9 @@
 name: provision-cloud-agent
 description: >
   Provision an always-on cloud-hosted coding agent: pick a host platform
-  (Railway today; pluggable for Fly.io, AWS, …), deploy a dev machine image
+  (Railway or AWS EC2; pluggable for Fly.io, …), deploy a dev machine image
   with durable storage, install a coding agent (Claude Code, Codex, or
-  OpenCode), wire it to a control plane (Flow today), give it GitHub access
+  OpenCode), wire it to a control plane (Flow or Bizzybot/Slack), give it GitHub access
   and the current repo, sync selected env vars from the local machine, and
   hand it a bootstrap task. Use when asked to "provision a cloud agent",
   "run an agent in the cloud", "set up a devbox agent", or similar.
@@ -27,17 +27,17 @@ Ask the user (or read from their request):
 
 | Decision | Options today | Reference |
 |---|---|---|
-| Host platform | `railway` (implemented); `fly`, `aws` (contract below, not yet written) | `references/hosts/<host>.md` |
+| Host platform | `railway`, `aws` (implemented); `fly` (contract below, not yet written) | `references/hosts/<host>.md` |
 | Coding agent | `claude`, `codex`, `opencode` | `references/agents/<agent>.md` |
-| Control plane | `flow` (implemented); `none` (SSH-only box) | `references/control-planes/<plane>.md` |
+| Control plane | `flow`, `bizzybot` (implemented); `none` (SSH-only box) | `references/control-planes/<plane>.md` |
 | Repo | default: the current checkout's `git remote get-url origin` | — |
 | Env vars to sync | user selects from the local environment (Stage 6) | `scripts/copy-env-vars.sh` |
 
 **Compatibility check**: the control plane constrains the agent. The Flow
 bridge today runs `claude` fully; its `codex` harness is a stub and it has no
-`opencode` harness. If the user picks Flow + a non-Claude agent, say so and
-offer: Claude for the control plane now, the other agent side-by-side for SSH
-use.
+`opencode` harness. Bizzybot drives Claude Code only. If the user picks a
+non-Claude agent with either, say so and offer: Claude for the control plane
+now, the other agent side-by-side for SSH use.
 
 Also collect the agent's name/handle, and the secrets the user must generate
 themselves (each agent reference says which). **Secrets never pass through the
@@ -107,7 +107,10 @@ For `none`: skip; the box keeps its idle keep-alive and you use it over SSH.
    vars are visible to anyone with access to the hosting project.
 2. On the box: `gh auth setup-git` (wires git's HTTPS credential helper),
    `git config --global user.name/email`, both persisting via
-   `GIT_CONFIG_GLOBAL` on the durable mount.
+   `GIT_CONFIG_GLOBAL` on the durable mount. Take the name from
+   `gh api user --jq .name`; for the email use
+   `<login>@users.noreply.github.com` unless the token has the `user:email`
+   scope (`gh api user/emails` 404s otherwise).
 3. Determine the repo from the local checkout: `git remote get-url origin`
    (convert `git@github.com:owner/repo.git` → `https://github.com/owner/repo`
    since the box authenticates over HTTPS). Clone into
@@ -121,6 +124,7 @@ exist locally. Run `scripts/copy-env-vars.sh`:
 
 ```sh
 scripts/copy-env-vars.sh --host railway --target <service> NAME1 NAME2 …
+scripts/copy-env-vars.sh --host aws --target <ssh-alias> NAME1 NAME2 …
 ```
 
 It copies each named variable from the local environment (or a `--env-file`)
@@ -144,6 +148,12 @@ Its report is the real end-to-end verification: it exercises the agent auth,
 the control plane, GitHub access, the checkout, and the synced env vars in one
 shot. Relay the outcome to the user, including anything the agent could not
 make work (missing vars, services it can't reach from the box).
+
+## Add-ons
+
+- `references/access/eks-readonly-and-db.md` — give the box read-only
+  Kubernetes access and read-only production DB queries without any network
+  path into the VPCs (instance role + EKS view policy + in-cluster psql pod).
 
 ## Day-2 notes
 

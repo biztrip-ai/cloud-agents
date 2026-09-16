@@ -5,8 +5,9 @@
 # Usage:
 #   copy-env-vars.sh --host railway --target <service> [--env-file .env] NAME1 NAME2 ...
 #
-#   --host      Host platform (adapter below). Currently: railway
-#   --target    Host-specific destination (railway: the service name/id)
+#   --host      Host platform (adapter below). Currently: railway, aws
+#   --target    Host-specific destination (railway: the service name/id;
+#               aws: the ssh alias/host of the box)
 #   --env-file  Optionally source names from a dotenv-style file first;
 #               real environment values still win over file values.
 #   NAME...     The variable names to copy. Names only — values are resolved
@@ -49,11 +50,21 @@ set_railway() { # name value
   railway variable set --skip-deploys --service "$TARGET" "$1=$2" >/dev/null
 }
 
+# aws: upsert KEY=value into /workspaces/env/agent.env over ssh. The value
+# travels on the ssh stdin, never in argv or the remote shell's history.
+AWS_ENV_FILE="${AWS_ENV_FILE:-/workspaces/env/agent.env}"
+set_aws() { # name value
+  printf '%s=%s\n' "$1" "$2" | ssh "$TARGET" "f=$AWS_ENV_FILE; k=$1; \
+    tmp=\$(mktemp); grep -v \"^\$k=\" \"\$f\" > \"\$tmp\" 2>/dev/null || true; \
+    cat >> \"\$tmp\"; install -m 600 \"\$tmp\" \"\$f\"; rm -f \"\$tmp\""
+}
+
 copied=() missing=()
 for name in "${NAMES[@]}"; do
   if value=$(resolve "$name"); then
     case "$HOST" in
       railway) set_railway "$name" "$value" ;;
+      aws)     set_aws "$name" "$value" ;;
       *) echo "unknown host: $HOST" >&2; exit 1 ;;
     esac
     copied+=("$name")
@@ -68,4 +79,6 @@ echo "copied:  ${copied[*]:-none}"
 case "$HOST" in
   railway)
     echo "note: vars were staged with --skip-deploys — redeploy the service to apply." ;;
+  aws)
+    echo "note: written to $AWS_ENV_FILE on $TARGET — run: ssh $TARGET 'sudo systemctl restart agent.service'" ;;
 esac
