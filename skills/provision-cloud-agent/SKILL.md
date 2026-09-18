@@ -94,8 +94,12 @@ config-dir env var so state persists, and note its privilege rules (Claude
 refuses permission-bypass mode as root — the start command must drop to a
 non-root user).
 
+Also register the browser MCP (the agent reference's **Browser** section) so
+the agent can check web UIs itself.
+
 Verify: run the agent headlessly on the box with a trivial prompt and see a
-real reply before going further.
+real reply, then a second prompt that opens a page through the browser MCP,
+before going further.
 
 ## Stage 3 — Control plane
 
@@ -150,6 +154,9 @@ plane, or headless CLI if `none`) a bootstrap task:
 > browser — install a headless browser (e.g. `npx playwright install
 > chromium --with-deps`) if none is present, load the app's main page, and
 > report what you see plus any failures.
+
+(With the browser MCP registered, adjust the task: "verify it with the
+chrome-devtools browser tools" instead of installing Playwright.)
 
 Its report is the real end-to-end verification: it exercises the agent auth,
 the control plane, GitHub access, the checkout, and the synced env vars in one

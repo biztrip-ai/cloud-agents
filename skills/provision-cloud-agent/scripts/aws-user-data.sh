@@ -38,6 +38,17 @@ fi
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | \
   env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh
 
+# Google Chrome stable (official apt repo) — the agent's headless browser, driven
+# through chrome-devtools-mcp (registered for Claude in references/agents/claude.md).
+if ! command -v google-chrome-stable >/dev/null; then
+  install -dm755 /etc/apt/keyrings
+  curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | \
+    gpg --dearmor --yes -o /etc/apt/keyrings/google-chrome.gpg
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+    > /etc/apt/sources.list.d/google-chrome.list
+  apt-get update && apt-get install -y google-chrome-stable fonts-liberation fonts-noto-color-emoji
+fi
+
 # --- Durable layout ----------------------------------------------------------
 mkdir -p $WS/.npm-global/bin $WS/.python $WS/.uv/tools $WS/.uv/bin \
          $WS/.claude $WS/projects $WS/env $WS/bin

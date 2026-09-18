@@ -29,6 +29,34 @@ redeploys. Do **not** copy `~/.claude` credentials from the local machine —
 tokens there rotate via refresh and sharing them across machines causes
 sign-out conflicts; `setup-token` exists for exactly this.
 
+## Browser (chrome-devtools MCP)
+
+Agents need a real browser to check their work. The host installs Google
+Chrome stable (on AWS, `scripts/aws-user-data.sh` does it). Register
+[chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp)
+for Claude at **user scope**. With `CLAUDE_CONFIG_DIR=/workspaces/.claude` it
+lands in `/workspaces/.claude/.claude.json`, so it survives redeploys and
+every session loads it, including sessions started by the control plane:
+
+```sh
+claude mcp add --scope user chrome-devtools -- npx -y chrome-devtools-mcp@latest --headless --isolated
+claude mcp list | grep chrome-devtools      # expect "✔ Connected"
+```
+
+- `--headless` because there's no display. `--isolated` gives each session a
+  throwaway profile, so concurrent Slack threads don't share cookies or logins.
+- MCP servers load when a session starts. Existing sessions don't get it, but
+  new threads do; no daemon restart is needed.
+- Keep `CLAUDE_CHROME=0` for Bizzybot. `--chrome` is Claude-in-Chrome, which
+  needs a desktop Chrome with the extension, not this.
+
+Verify with a real session before calling the box ready:
+
+```sh
+claude -p "Using the chrome-devtools MCP tools, open https://example.com and reply with only the page title." \
+  --allowedTools "mcp__chrome-devtools__*" < /dev/null      # → Example Domain
+```
+
 ## Privileges
 
 Claude Code **refuses `--dangerously-skip-permissions` as root** ("cannot be
