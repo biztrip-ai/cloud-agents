@@ -34,7 +34,10 @@ uv tool install "git+https://github.com/biztrip-ai/bizzybot.git#subdirectory=age
 bizzybot --help >/dev/null 2>&1 || command -v bizzybot   # proves the entrypoint exists
 ```
 
-Update later: `uv tool upgrade bizzybot-agent-wrapper`.
+Update later: see **Upgrade** below. A plain `ssh host '…'` session on AWS
+doesn't get `UV_TOOL_DIR`/`UV_TOOL_BIN_DIR`, so pass them explicitly.
+Otherwise `uv` looks in `~/.local/share/uv/tools` and reports that the tool
+isn't installed.
 
 ## Configure (env, on the host's set-variable mechanism)
 
@@ -109,7 +112,16 @@ headless test remains the right check.
 
 - Lost or rotated token: reissue from the dashboard, update the env var,
   restart the unit.
-- Upgrade: `uv tool upgrade bizzybot-agent-wrapper && sudo systemctl restart agent.service`.
+- Upgrade (restarting ends the open `claude` subprocesses. First check that
+  they're idle with `ps -eo pid,etime,pcpu,comm | grep claude`. Their sessions
+  are listed in `sessions.json` and resume on reconnect):
+  ```sh
+  ssh <alias> 'export UV_TOOL_DIR=/workspaces/.uv/tools UV_TOOL_BIN_DIR=/workspaces/.uv/bin
+    uv tool upgrade bizzybot-agent-wrapper && sudo systemctl restart agent.service'
+  ```
+  Verify with `journalctl -u agent.service`: the `preflight` lines should show ✓,
+  followed by `connected to Central-Dispatch`. Record the new commit in
+  the company manifest (`bin/agents set <co> <agent> control_plane_details.commit …`).
 - Idle `claude` subprocesses are reaped after `SESSION_IDLE_TIMEOUT_S`
   (default 4 h); sessions resume transparently.
 - Logs are per run, capped 1 MiB + one rotation; prune `logs/` yourself.

@@ -19,12 +19,17 @@ does **not** install the coding agent or control plane — Stages 2/3 do that
 over SSH.
 
 ```sh
-R=us-west-2; NAME=<agent-name>; MYIP=$(curl -s https://checkip.amazonaws.com)
+CO=<company>; R=us-west-2; NAME=<agent-name>; MYIP=$(curl -s https://checkip.amazonaws.com)
 AMI=$(aws ssm get-parameter --region $R --query Parameter.Value --output text \
   --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id)
 VPC=$(aws ec2 describe-vpcs --region $R --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
 
-aws ec2 import-key-pair --region $R --key-name $NAME --public-key-material fileb://~/.ssh/id_ed25519.pub
+# Record the agent first, then give it its own SSH key. The private key lives
+# only in the encrypted company manifest (see "Agent manifest" in SKILL.md).
+echo "{\"name\":\"$NAME\",\"status\":\"provisioning\",\"host\":{\"platform\":\"aws\",\"region\":\"$R\"}}" \
+  | bin/agents upsert $CO
+PUB=$(bin/agents keygen $CO $NAME)
+aws ec2 import-key-pair --region $R --key-name $NAME --public-key-material fileb://<(printf '%s\n' "$PUB")
 SG=$(aws ec2 create-security-group --region $R --group-name $NAME --description "$NAME ssh" --vpc-id $VPC --query GroupId --output text)
 aws ec2 authorize-security-group-ingress --region $R --group-id $SG --protocol tcp --port 22 --cidr $MYIP/32
 
@@ -42,15 +47,19 @@ aws ec2 associate-address --region $R --instance-id $ID --allocation-id $EIP
 IP=$(aws ec2 describe-addresses --region $R --allocation-ids $EIP --query 'Addresses[0].PublicIp' --output text)
 ```
 
-Add an SSH alias so every later step is `ssh $NAME …`:
+Write the host details into the manifest right away, so the box is reachable
+(and accounted for) even if a later step fails:
 
+```sh
+bin/agents set $CO $NAME host "$(printf '{"platform":"aws","account":"%s","region":"%s","instance_id":"%s","instance_type":"t3.large","public_ip":"%s","key_name":"%s","security_group":"%s","eip_allocation":"%s"}' \
+  "$(aws sts get-caller-identity --query Account --output text)" $R $ID $IP $NAME $SG $EIP)"
+bin/agents set $CO $NAME ssh.user '"ubuntu"'
+bin/agents set $CO $NAME ssh.host "\"$IP\""
 ```
-Host <agent-name>
-  HostName <IP>
-  User ubuntu
-  IdentityFile ~/.ssh/id_ed25519
-  StrictHostKeyChecking accept-new
-```
+
+Every later `ssh $NAME '…'` in this skill means `bin/agents ssh $CO $NAME '…'`,
+which uses the agent's stored key. Don't add a `~/.ssh/config` alias pointing
+at a personal key.
 
 Sizing: t3.large (2 vCPU / 8 GB) is the floor for Claude Code + an app + a
 headless browser; bizzybot pins ~100 MB per live Slack thread. Root 60 GB gp3.

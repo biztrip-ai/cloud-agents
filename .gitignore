@@ -1,0 +1,8 @@
+# Decrypted agent manifests must never be committed.
+companies/**/*.plain.json
+companies/**/*.dec.json
+*.agekey
+keys.txt
+
+# Slack CLI local caches
+slack-apps/*/.slack/cache/

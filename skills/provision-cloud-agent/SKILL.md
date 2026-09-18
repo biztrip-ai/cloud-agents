@@ -17,6 +17,12 @@ tools from durable storage, runs a coding agent connected to a control plane
 (so humans can talk to it), and holds a working checkout of the current repo
 with GitHub access and the env vars it needs to run the app and its tests.
 
+Every agent this skill creates, and every existing agent it finds, is recorded
+in the company's encrypted manifest `companies/<company>/agents.sops.json`,
+which lives in the company's private repo at `$CLOUD_AGENTS_HOME` (see
+**Agent manifest** below). Read it first with `bin/agents list <company>`:
+the user may be asking about an agent that already exists.
+
 The workflow is a spine of seven stages. Stages 1, 3, and 4 are **pluggable**:
 each option is a reference file implementing a small contract, and adding a
 platform means writing a new reference — not changing this file.
@@ -30,6 +36,7 @@ Ask the user (or read from their request):
 | Host platform | `railway`, `aws` (implemented); `fly` (contract below, not yet written) | `references/hosts/<host>.md` |
 | Coding agent | `claude`, `codex`, `opencode` | `references/agents/<agent>.md` |
 | Control plane | `flow`, `bizzybot` (implemented); `none` (SSH-only box) | `references/control-planes/<plane>.md` |
+| Company | which `companies/<company>/` manifest the agent belongs to (e.g. `biztrip`) | `bin/agents` |
 | Repo | default: the current checkout's `git remote get-url origin` | — |
 | Env vars to sync | user selects from the local environment (Stage 6) | `scripts/copy-env-vars.sh` |
 
@@ -148,6 +155,83 @@ Its report is the real end-to-end verification: it exercises the agent auth,
 the control plane, GitHub access, the checkout, and the synced env vars in one
 shot. Relay the outcome to the user, including anything the agent could not
 make work (missing vars, services it can't reach from the box).
+
+## Agent manifest — `companies/<company>/agents.sops.json`
+
+The explicit record of every cloud agent a company runs. It is SOPS-encrypted
+(age) and committed to the **company's private repo**, never this public one.
+`CLOUD_AGENTS_HOME` points `bin/agents` at the directory that holds that repo's
+`.sops.yaml` and `companies/`; if it isn't set, ask the user where it is. Always go
+through `bin/agents` (run from the repo root), which decrypts in memory and
+re-encrypts on save. **Never write a decrypted copy to disk and never print
+private keys or tokens.**
+
+```sh
+bin/agents list    <co>                      # what exists
+bin/agents show    <co> <agent>              # one entry, private key masked
+bin/agents ssh     <co> <agent> '<cmd>'      # interrogate an EC2 agent
+bin/agents railway <co> <agent> '<cmd>'      # interrogate a Railway agent
+bin/agents upsert  <co> < entry.json         # add or replace an entry by name
+bin/agents set     <co> <agent> <dotted.path> '<json>'
+bin/agents keygen  <co> <agent>              # new per-agent SSH key → manifest
+```
+
+Keep it updated as part of the workflow, not afterwards:
+
+- **Start of Stage 1**: `upsert` a stub entry with `"status": "provisioning"`
+  and run `keygen`, so the agent's own SSH key exists before the machine does.
+  Every agent gets its own key pair; never reuse a personal `~/.ssh` key.
+- **End of Stage 1**: record the host details (instance/service IDs, IP,
+  security group, EIP…) so an abandoned run still says what to clean up.
+- **After Stage 6**: fill in the rest, set `"status": "active"` and
+  `last_verified` to today.
+- **Found an agent that isn't listed**: add it with `"status": "unverified"`
+  and what you know in `notes`.
+- **Tore one down**: `"status": "deleted"`; keep the entry unless asked.
+- **Upgrades, token renewals, restarts**: record the new commit/date in
+  `control_plane_details` / `claude_auth`.
+
+Store secrets that are needed to *reach or recover* the agent (its SSH private
+key). Do not copy the agent's runtime secrets (`CLAUDE_CODE_OAUTH_TOKEN`,
+`GH_TOKEN`, …) into the manifest; `env_vars` lists their **names** only — they
+live on the box.
+
+Entry shape (`null` for unknowns):
+
+```json
+{
+  "name": "acme-pm",
+  "aliases": ["PM bot"],
+  "status": "provisioning | active | unverified | stopped | deleted",
+  "created": "2026-01-01T00:00:00Z",
+  "last_verified": "2026-01-02",
+  "provisioned_by": "provision-cloud-agent",
+  "host": {
+    "platform": "aws",
+    "account": "…", "region": "us-west-2",
+    "instance_id": "i-…", "instance_type": "t3.xlarge",
+    "public_ip": "…", "key_name": "…", "security_group": "sg-…", "eip_allocation": "eipalloc-…"
+  },
+  "ssh": {
+    "user": "ubuntu", "host": "…", "port": 22,
+    "key": { "type": "ed25519", "public": "ssh-ed25519 …", "private": "-----BEGIN OPENSSH PRIVATE KEY-----…" }
+  },
+  "coding_agent": "claude | codex | opencode",
+  "control_plane": "flow | bizzybot | none",
+  "control_plane_details": { "package": "…", "commit": "…", "agent_id": "…", "sponsor": "…" },
+  "claude_auth": { "method": "claude setup-token", "renewed": "…", "expires_approx": "…" },
+  "state_dir": "/workspaces/<handle>",
+  "repo": { "url": "https://github.com/owner/repo", "path": "/workspaces/projects/repo" },
+  "env_vars": ["GH_TOKEN", "…"],
+  "notes": ""
+}
+```
+
+For Railway, `host` holds `project`, `project_id`, `environment`, `service`,
+`service_id`, and there is no `ssh` block (`bin/agents railway` uses the IDs).
+Company-level records (Slack workspace, AWS account, shared infrastructure such
+as the Bizzybot Central-Dispatch, Slack apps) sit at the top level of the same
+file.
 
 ## Add-ons
 
