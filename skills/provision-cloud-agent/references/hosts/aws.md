@@ -97,15 +97,14 @@ The "start command" contract maps to: the control plane writes
 
 ## Environment variables
 
-Append/replace `KEY=value` lines in `/workspaces/env/agent.env`, then restart
-the unit. `scripts/copy-env-vars.sh --host aws --target <ssh-alias> NAME…`
-does this without printing values (upsert per key, over SSH stdin). Manual
-equivalent for a single user-generated secret:
-
-```sh
-printf 'GH_TOKEN=%s\n' "$(gh auth token)" | ssh $NAME 'cat >> /workspaces/env/agent.env'
-ssh $NAME 'sudo systemctl restart agent.service'
-```
+Secrets go into `/workspaces/env/agent.env` (`KEY=value`, 0600) through
+the methods in SKILL.md's **Delivering secrets**: the dropbox (`env:NAME`
+upserts into this file and `--restart` restarts the unit) or
+`scripts/claude-login.sh` for the Claude token. For bulk, non-interactive
+values the operator already has locally,
+`scripts/copy-env-vars.sh --host aws --target <ssh-alias> NAME…` upserts
+without printing. An app's own `.env` goes next to the app in the checkout,
+not in `agent.env`, so it isn't exported into every Claude session.
 
 Changes apply on restart of the unit (a few seconds; no reboot). Vars are
 readable by anyone who can SSH in as `ubuntu` or has EC2/SSM access to the

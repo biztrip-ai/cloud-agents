@@ -34,6 +34,10 @@ uv tool install "git+https://github.com/biztrip-ai/bizzybot.git#subdirectory=age
 bizzybot --help >/dev/null 2>&1 || command -v bizzybot   # proves the entrypoint exists
 ```
 
+The package also provides `bizzybot-dropbox`, the standard way to get secrets
+onto the box (SKILL.md **Delivering secrets**). It works before registration,
+so install the package first and request `REGISTRATION_TOKEN` through it.
+
 Update later: see **Upgrade** below. A plain `ssh host '…'` session on AWS
 doesn't get `UV_TOOL_DIR`/`UV_TOOL_BIN_DIR`, so pass them explicitly.
 Otherwise `uv` looks in `~/.local/share/uv/tools` and reports that the tool
@@ -46,7 +50,7 @@ prefer env so the host's mechanism owns it). Set:
 
 | Var | Value | Why |
 |---|---|---|
-| `REGISTRATION_TOKEN` | user-pasted | identity; **secret** |
+| `REGISTRATION_TOKEN` | via the dropbox (`env:REGISTRATION_TOKEN`) | identity; **secret**. 48 hex chars |
 | `BIZZYBOT_STATE_DIR` | `/workspaces/<handle>` | sessions, acked seq, logs — durable |
 | `CLAUDE_CWD` | `/workspaces/projects/<repo>` | the agent's identity/world |
 | `CLAUDE_CHROME` | `0` | default `1` adds `--chrome` (Claude-in-Chrome, needs desktop Chrome + extension). The server's browser is chrome-devtools-mcp instead (agent reference) |
@@ -110,8 +114,8 @@ headless test remains the right check.
 
 ## Recovery / day 2
 
-- Lost or rotated token: reissue from the dashboard, update the env var,
-  restart the unit.
+- Lost or rotated token: reissue it from the dashboard, then run
+  `bizzybot-dropbox request --restart 'env:REGISTRATION_TOKEN::…'`.
 - Upgrade (restarting ends the open `claude` subprocesses. First check that
   they're idle with `ps -eo pid,etime,pcpu,comm | grep claude`. Their sessions
   are listed in `sessions.json` and resume on reconnect):
