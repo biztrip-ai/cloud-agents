@@ -49,7 +49,7 @@ prefer env so the host's mechanism owns it). Set:
 | `REGISTRATION_TOKEN` | user-pasted | identity; **secret** |
 | `BIZZYBOT_STATE_DIR` | `/workspaces/<handle>` | sessions, acked seq, logs — durable |
 | `CLAUDE_CWD` | `/workspaces/projects/<repo>` | the agent's identity/world |
-| `CLAUDE_CHROME` | `0` | default `1` adds `--chrome` (Claude-in-Chrome); no Chrome on a server |
+| `CLAUDE_CHROME` | `0` | default `1` adds `--chrome` (Claude-in-Chrome, needs desktop Chrome + extension). The server's browser is chrome-devtools-mcp instead (agent reference) |
 | `CLAUDE_PERMISSION_MODE` | `bypassPermissions` (default) | no approval UI in Slack |
 | `CENTRAL_URL` | omit for hosted | only for a self-hosted Central-Dispatch |
 | `PR_REVIEW_CHANNEL` etc. | optional | see `agent-wrapper/.env.example` |

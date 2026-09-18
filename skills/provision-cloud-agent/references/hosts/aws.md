@@ -13,7 +13,7 @@ destroys it (snapshot first if you care). `/workspaces` is a directory on it.
 ## Provision
 
 Everything below is scripted by `scripts/aws-user-data.sh` (cloud-init): OS
-packages (git, gh, node 22, python3, uv, jq, ripgrep), the `/workspaces`
+packages (git, gh, node 22, python3, uv, jq, ripgrep, Google Chrome stable), the `/workspaces`
 layout, a base env file, and the `agent.service` systemd unit. The user-data
 does **not** install the coding agent or control plane — Stages 2/3 do that
 over SSH.
