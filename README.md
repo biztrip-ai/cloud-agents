@@ -6,6 +6,23 @@ Each directory under `skills/` is one skill in the standard Claude Code layout
 `.claude/skills` is a symlink to `skills/`, so every skill is available when
 running Claude Code inside this repo.
 
+## Company agent manifests
+
+What each company has provisioned is recorded in an encrypted manifest,
+`companies/<company>/agents.sops.json`, encrypted with
+[SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age).
+Manifests live in the company's own **private** repo, never in this one.
+`bin/agents` reads and updates them without writing plaintext to disk:
+
+```sh
+brew install sops age
+export CLOUD_AGENTS_HOME=<private repo>/infra/cloud-agents   # holds .sops.yaml + companies/
+bin/agents list <company>
+bin/agents ssh <company> <agent> 'uptime'
+```
+
+See `CLAUDE.md` for the rules and for adding people who can decrypt.
+
 ## Using these skills
 
 Clone the repo and symlink (or copy) the skills you want into a skills

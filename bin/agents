@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Manage a company's encrypted cloud-agent manifest (companies/<co>/agents.sops.json).
+
+Company data lives outside this public repo. Point CLOUD_AGENTS_HOME at the
+directory that holds `.sops.yaml` and `companies/` (e.g. a private repo's
+infra/cloud-agents); it defaults to this repo's root.
+
+The manifest is decrypted in memory with `sops` and never written to disk in
+plaintext. Private SSH keys are only materialised in a 0600 temp file for the
+duration of an `ssh` call.
+
+  bin/agents list    <company>                  table of agents
+  bin/agents show    <company> <agent>          one agent (private key masked)
+  bin/agents ssh     <company> <agent> [cmd…]   SSH in (uses the stored key if any)
+  bin/agents railway <company> <agent> [cmd…]   `railway ssh` into a Railway agent
+  bin/agents upsert  <company> < entry.json     add/replace an agent (matched by name)
+  bin/agents set     <company> <agent> <dotted.path> <json-value>
+  bin/agents keygen  <company> <agent>          new per-agent ed25519 key, stored in the
+                                                manifest; prints the public key
+  bin/agents edit    <company>                  open in $EDITOR via `sops edit`
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.expanduser(os.environ.get("CLOUD_AGENTS_HOME") or
+                          os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def path_for(company):
+    return os.path.join("companies", company, "agents.sops.json")
+
+
+def load(company):
+    p = path_for(company)
+    if not os.path.exists(os.path.join(ROOT, p)):
+        if not os.path.exists(os.path.join(ROOT, ".sops.yaml")):
+            sys.exit(f"no {p} under {ROOT} — set CLOUD_AGENTS_HOME to the directory "
+                     "holding .sops.yaml and companies/")
+        return {"company": company, "schema_version": 2, "agents": []}
+    out = subprocess.run(["sops", "decrypt", p], cwd=ROOT, check=True,
+                         capture_output=True, text=True).stdout
+    return json.loads(out)
+
+
+def save(company, data):
+    p = path_for(company)
+    os.makedirs(os.path.join(ROOT, os.path.dirname(p)), exist_ok=True)
+    enc = subprocess.run(
+        ["sops", "encrypt", "--filename-override", p,
+         "--input-type", "json", "--output-type", "json", "/dev/stdin"],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+        input=json.dumps(data, indent=2)).stdout
+    with open(os.path.join(ROOT, p), "w") as f:
+        f.write(enc)
+
+
+def find(data, name):
+    for a in data["agents"]:
+        if a["name"].lower() == name.lower() or name.lower() in [x.lower() for x in a.get("aliases", [])]:
+            return a
+    sys.exit(f"no agent named {name!r} in {data['company']}")
+
+
+def masked(agent):
+    a = json.loads(json.dumps(agent))
+    key = (a.get("ssh") or {}).get("key") or {}
+    if key.get("private"):
+        key["private"] = "<stored — use `bin/agents ssh`>"
+    return a
+
+
+def cmd_list(company):
+    data = load(company)
+    rows = [("NAME", "STATUS", "PLATFORM", "WHERE", "AGENT/PLANE")]
+    for a in data["agents"]:
+        h = a.get("host", {})
+        where = (a.get("ssh") or {}).get("host") or h.get("service") or "-"
+        rows.append((a["name"], a.get("status", "?"), h.get("platform", "?"), where,
+                     f"{a.get('coding_agent') or '-'}/{a.get('control_plane') or '-'}"))
+    w = [max(len(str(r[i])) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(str(c).ljust(w[i]) for i, c in enumerate(r)))
+
+
+def cmd_ssh(company, name, *cmd):
+    a = find(load(company), name)
+    s = a.get("ssh") or sys.exit(f"{name} has no ssh block (Railway? use `railway`)")
+    args = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-p", str(s.get("port", 22))]
+    priv = (s.get("key") or {}).get("private")
+    tmp = None
+    try:
+        if priv:
+            fd, tmp = tempfile.mkstemp(prefix="agentkey-")
+            with os.fdopen(fd, "w") as f:
+                f.write(priv if priv.endswith("\n") else priv + "\n")
+            os.chmod(tmp, 0o600)
+            args += ["-i", tmp, "-o", "IdentitiesOnly=yes"]
+        args.append(f"{s['user']}@{s['host']}")
+        return subprocess.call(args + list(cmd))
+    finally:
+        if tmp:
+            os.unlink(tmp)
+
+
+def cmd_railway(company, name, *cmd):
+    a = find(load(company), name)
+    h = a["host"]
+    if h.get("platform") != "railway":
+        sys.exit(f"{name} is on {h.get('platform')}, not railway")
+    args = ["railway", "ssh", "--project", h["project_id"], "--environment",
+            h.get("environment", "production"), "--service", h["service"]]
+    if cmd:
+        args += ["--", *cmd]
+    return subprocess.call(args)
+
+
+def cmd_upsert(company):
+    entry = json.load(sys.stdin)
+    data = load(company)
+    data["agents"] = [a for a in data["agents"] if a["name"] != entry["name"]] + [entry]
+    save(company, data)
+    print(f"saved {entry['name']} to {path_for(company)}")
+
+
+def cmd_set(company, name, dotted, value):
+    data = load(company)
+    node = find(data, name)
+    *parents, leaf = dotted.split(".")
+    for k in parents:
+        node = node.setdefault(k, {})
+    node[leaf] = json.loads(value)
+    save(company, data)
+    print(f"set {name}.{dotted}")
+
+
+def cmd_keygen(company, name):
+    data = load(company)
+    a = find(data, name)
+    with tempfile.TemporaryDirectory() as d:
+        k = os.path.join(d, "k")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+                        f"{company}-{a['name']}-agent", "-f", k], check=True)
+        priv, pub = open(k).read(), open(k + ".pub").read().strip()
+    ssh = a.setdefault("ssh", {})
+    ssh["key"] = {"type": "ed25519", "public": pub, "private": priv}
+    save(company, data)
+    print(pub)
+
+
+def main(argv):
+    if len(argv) < 3 or argv[1] in ("-h", "--help"):
+        sys.exit(__doc__)
+    cmd, company, rest = argv[1], argv[2], argv[3:]
+    if cmd == "list":
+        cmd_list(company)
+    elif cmd == "show":
+        print(json.dumps(masked(find(load(company), rest[0])), indent=2))
+    elif cmd == "ssh":
+        sys.exit(cmd_ssh(company, *rest))
+    elif cmd == "railway":
+        sys.exit(cmd_railway(company, *rest))
+    elif cmd == "upsert":
+        cmd_upsert(company)
+    elif cmd == "set":
+        cmd_set(company, *rest)
+    elif cmd == "keygen":
+        cmd_keygen(company, *rest)
+    elif cmd == "edit":
+        sys.exit(subprocess.call(["sops", "edit", path_for(company)], cwd=ROOT))
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
