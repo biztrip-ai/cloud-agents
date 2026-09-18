@@ -46,10 +46,58 @@ bridge today runs `claude` fully; its `codex` harness is a stub and it has no
 non-Claude agent with either, say so and offer: Claude for the control plane
 now, the other agent side-by-side for SSH use.
 
-Also collect the agent's name/handle, and the secrets the user must generate
-themselves (each agent reference says which). **Secrets never pass through the
-conversation**: the user runs the commands that read or paste them
-(`$(gh auth token)` etc. expand locally and are never printed).
+Also collect the agent's name/handle, and note which secrets the box will need
+(each reference says which). They're delivered with the methods in **Delivering
+secrets** below. **Secret values never pass through the conversation.**
+
+## Delivering secrets
+
+There are two standard methods. Don't improvise others, and never ask the user
+to paste a secret into chat or into a silent terminal prompt.
+
+1. **Claude token: create it on the box.** Run `scripts/claude-login.sh`
+   (details in `references/agents/claude.md`):
+   ```sh
+   bin/agents ssh <co> <agent> 'bash -s start' < scripts/claude-login.sh        # prints a URL
+   bin/agents ssh <co> <agent> 'bash -s finish <code>' < scripts/claude-login.sh
+   ```
+   The user opens the URL, signs in, and pastes back the **short code** the page
+   shows (`<code>#<state>`). That code is safe in chat, because only the login
+   waiting on this box can redeem it. The `sk-ant-oat01-…` token is created,
+   tested and stored on the box and never exists anywhere else. Don't ask the
+   user to run `claude setup-token` on their own machine: its mid-flow code
+   and its final token are easily confused, and the code is useless on
+   another machine.
+
+2. **Everything else: the Bizzybot secret dropbox.** This covers
+   `REGISTRATION_TOKEN`, `GH_TOKEN`, API keys, and SSH or deploy keys.
+   `bizzybot-dropbox` comes with the `bizzybot-agent-wrapper` package, so
+   install that first (see `references/control-planes/bizzybot.md`; it's
+   worth installing even for other control planes). Run it in the background
+   on the box, then give the user the link and the check code:
+   ```sh
+   bin/agents ssh <co> <agent> 'set -a; . /workspaces/env/base.env; set +a
+     nohup bizzybot-dropbox request --ttl 60 --restart --note "<what this box is and why>" \
+       "env:REGISTRATION_TOKEN::48-char token from the <App> card on the Central-Dispatch dashboard" \
+       "env:GH_TOKEN::output of gh auth token on your machine" \
+       > /workspaces/<handle>/dropbox.log 2>&1 < /dev/null &
+     sleep 6; cat /workspaces/<handle>/dropbox.log'        # → Open: <url> / Check code: XXX-XXX
+   ```
+   - The user's browser encrypts each value to a key that exists only on the
+     box; Central-Dispatch relays ciphertext only.
+   - Once the user submits, the box installs each value (`env:` into
+     `agent.env`, `settings:` into `$BIZZYBOT_STATE_DIR/settings.env`,
+     `file:NAME:/path` as a 0600 file) and restarts the agent.
+   - Confirm it by re-reading `dropbox.log`: it lists names and lengths
+     only. Also check the shape of each value without printing it (length,
+     prefix, hex).
+   - Write a precise `::description` for every item, saying exactly where the
+     value comes from.
+
+**Fallback**, only if Central-Dispatch is unreachable: the user runs a pipe in
+their own terminal, e.g.
+`pbpaste | bin/agents ssh <co> <agent> 'read -r T; printf "NAME=%s\n" "$T" >> /workspaces/env/agent.env'`.
+Values like `$(gh auth token)` expand locally and are never printed.
 
 ## Stage 1 — Provision the machine (host reference)
 
@@ -113,9 +161,10 @@ For `none`: skip; the box keeps its idle keep-alive and you use it over SSH.
 
 ## Stage 4 — GitHub access + repo checkout
 
-1. The **user** copies their GitHub token to the host's env (host reference's
-   set-variable mechanism): `... "GH_TOKEN=$(gh auth token)"`. Warn: host env
-   vars are visible to anyone with access to the hosting project.
+1. `GH_TOKEN` arrives through the dropbox request (see **Delivering secrets**;
+   ask for it in the same request as the control plane's token). Warn the user:
+   anyone who can SSH into the box, or who has access to the hosting project,
+   can read it.
 2. On the box: `gh auth setup-git` (wires git's HTTPS credential helper),
    `git config --global user.name/email`, both persisting via
    `GIT_CONFIG_GLOBAL` on the durable mount. Take the name from
@@ -252,6 +301,8 @@ file.
   `/update` commands — see the plane's reference.
 - The checkout drifts behind the default branch; tell the agent to
   `git pull`, or add a pull to the start command.
-- Rotating a token = update the host env var (user-run) + restart.
+- Rotating a token: open a new dropbox request for just that item with
+  `--restart`. For the Claude token, run `scripts/claude-login.sh` again, then
+  restart the agent service.
 - Recurring apt/system packages → bake a custom image instead of installing
   on every boot.

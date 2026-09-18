@@ -11,12 +11,13 @@ npm install -g --prefix /workspaces/.npm-global @openai/codex
 Two options:
 
 - **API key** (simplest for headless): set `OPENAI_API_KEY` on the host
-  (user-run; from https://platform.openai.com/api-keys). Usage-billed.
+  (deliver with the dropbox, `env:OPENAI_API_KEY`; from https://platform.openai.com/api-keys). Usage-billed.
 - **ChatGPT subscription sign-in**: `codex login` uses a browser flow. On a
   headless box, run `codex login` locally, then copy `~/.codex/auth.json` to
-  `/workspaces/.codex/auth.json` on the host (user-run; contains tokens —
-  never through the conversation, use a pipe such as
-  `cat ~/.codex/auth.json | <host-shell> -- tee /workspaces/.codex/auth.json >/dev/null`).
+  `/workspaces/.codex/auth.json` on the host with the dropbox, as a file item
+  (`file:codex_auth:/workspaces/.codex/auth.json`). The user pastes the file's
+  contents into the page. It contains tokens, so it never goes through the
+  conversation.
 
 ## Persistence
 

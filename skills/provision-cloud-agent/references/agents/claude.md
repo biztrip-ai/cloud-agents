@@ -8,19 +8,30 @@ npm install -g --prefix /workspaces/.npm-global @anthropic-ai/claude-code
 
 ## Auth
 
-The **user** generates a long-lived subscription token on their local machine:
+Create the token **on the box**, never on the user's machine, with
+`scripts/claude-login.sh`. It wraps `claude setup-token` in a tmux session:
 
 ```sh
-claude setup-token
+bin/agents ssh <co> <agent> 'bash -s start' < scripts/claude-login.sh
+#   → prints https://claude.com/cai/oauth/authorize?...  (give it to the user)
+bin/agents ssh <co> <agent> 'bash -s finish <code>' < scripts/claude-login.sh
+#   → "CLAUDE_CODE_OAUTH_TOKEN stored in /workspaces/env/agent.env (test prompt ok)"
 ```
 
-It opens a browser for approval, then the **CLI prints the token at the end**
-— `sk-ant-oat01-…`. NOT the shorter code shown in the browser mid-flow (that
-code gets pasted back into the CLI; a stored value that doesn't start with
-`sk-ant-oat01-` is the wrong thing and yields `401 Invalid bearer token`).
+The user opens the URL, signs in with the account the agent should use, and
+pastes back the **short code** the page shows (`<code>#<state>`, about 92
+characters). The code is safe to put in chat: only the login waiting on this
+box can redeem it. The script feeds the code in, captures the 1-year
+`sk-ant-oat01-…` token, checks it with a real prompt, and upserts it into
+`agent.env`. Then restart the agent service.
 
-Set on the host as `CLAUDE_CODE_OAUTH_TOKEN` (user-run). API-key alternative:
-`ANTHROPIC_API_KEY` (usage-billed).
+Don't have the user run `claude setup-token` locally and paste anything.
+Its mid-flow code (not a token) is easy to mistake for the token. A stored
+value that doesn't start with `sk-ant-oat01-` means that happened, and it
+gives `401 Invalid bearer token` / "Not logged in".
+
+API-key alternative (billed per use): deliver `ANTHROPIC_API_KEY` with the
+dropbox (`env:ANTHROPIC_API_KEY`).
 
 ## Persistence
 

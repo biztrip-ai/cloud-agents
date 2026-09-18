@@ -46,6 +46,13 @@ Rules:
   schema.
 - **One SSH key per agent**, created with `bin/agents keygen` and stored only in
   the manifest. Don't point agents at a personal `~/.ssh` key.
+- **Deliver secrets the standard way** (the provisioning skill's "Delivering
+  secrets" section). The Claude token is created on the box with
+  `scripts/claude-login.sh`, and the user only pastes the short sign-in code.
+  Everything else (registration tokens, `GH_TOKEN`, API keys, SSH keys) goes
+  through `bizzybot-dropbox`: give the user the link and the check code. Never
+  ask for a secret in chat, and don't have users paste into silent terminal
+  prompts.
 - **Runtime secrets stay on the box.** The manifest lists env var *names*;
   values like `CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` live in
   `/workspaces/env/agent.env` on the agent.
@@ -75,9 +82,10 @@ Rules:
   5. Record the new commit in the manifest.
 - **Central-Dispatch** usually auto-deploys from the bizzybot repo. Restarting an
   agent while it redeploys produces 502s, so check that the deploy has finished first.
-- **Claude auth expired** ("Not logged in"): run `claude setup-token` on the box in
-  tmux, have the user open the URL and paste the code back, and write the
-  resulting `sk-ant-oat01-…` into `agent.env` without printing it.
+- **Claude auth expired** ("Not logged in"): run
+  `bin/agents ssh <co> <agent> 'bash -s start' < skills/provision-cloud-agent/scripts/claude-login.sh`,
+  have the user open the URL and paste back the short code, run the same script
+  with `finish <code>`, then restart the agent service.
 - **Slack apps:** each Bizzybot agent needs its own Slack app. Keep a Slack CLI
   project per app in the company's private repo (`manifest.json` plus a
   `.slack/hooks.json` whose `get-manifest` hook is `sh -c "cat manifest.json"`).
