@@ -6,3 +6,6 @@ keys.txt
 
 # Slack CLI local caches
 slack-apps/*/.slack/cache/
+
+# Python bytecode
+__pycache__/
