@@ -17,6 +17,8 @@ duration of an `ssh` call.
   bin/agents set     <company> <agent> <dotted.path> <json-value>
   bin/agents keygen  <company> <agent>          new per-agent ed25519 key, stored in the
                                                 manifest; prints the public key
+  bin/agents rm      <company> <agent>          delete an entry outright (tearing an agent
+                                                down is usually status "deleted" instead)
   bin/agents edit    <company>                  open in $EDITOR via `sops edit`
 """
 import json
@@ -136,6 +138,14 @@ def cmd_set(company, name, dotted, value):
     print(f"set {name}.{dotted}")
 
 
+def cmd_rm(company, name):
+    data = load(company)
+    entry = find(data, name)
+    data["agents"] = [a for a in data["agents"] if a is not entry]
+    save(company, data)
+    print(f"removed {entry['name']} from {path_for(company)}")
+
+
 def cmd_keygen(company, name):
     data = load(company)
     a = find(data, name)
@@ -168,6 +178,8 @@ def main(argv):
         cmd_set(company, *rest)
     elif cmd == "keygen":
         cmd_keygen(company, *rest)
+    elif cmd == "rm":
+        cmd_rm(company, *rest)
     elif cmd == "edit":
         sys.exit(subprocess.call(["sops", "edit", path_for(company)], cwd=ROOT))
     else:
