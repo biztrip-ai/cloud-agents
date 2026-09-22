@@ -43,8 +43,8 @@ CENTRAL_URL=https://your-central-dispatch REGISTRATION_TOKEN=<token> bizzybot
 ### From source
 
 ```bash
-git clone https://github.com/biztrip-ai/cloud-agents/tree/main/bizzybot.git
-cd bizzybot/agent-wrapper
+git clone https://github.com/biztrip-ai/cloud-agents.git
+cd cloud-agents/bizzybot/agent-wrapper
 uv run bizzybot
 ```
 

@@ -2,7 +2,7 @@
 
 Makes the agent a Slack app user (`@bizzy`, `@cosmo`, `@omni` on the hosted
 Central-Dispatch, or your own app if you self-host it). Source:
-https://github.com/biztrip-ai/cloud-agents/tree/main/bizzybot — the `agent-wrapper/` half runs on
+https://github.com/biztrip-ai/cloud-agents (`bizzybot/`) — the `agent-wrapper/` half runs on
 the box; it dials out over a WebSocket to Central-Dispatch, so no inbound
 ports. Requires coding agent **Claude** (it drives Claude Code via the
 Agent SDK); `gh` on PATH.

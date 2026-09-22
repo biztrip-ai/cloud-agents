@@ -37,7 +37,7 @@ export const router = express.Router();
 
 // Source repo — linked from the dashboard, and where the install command below
 // pulls the agent-wrapper from.
-const REPO_URL = 'https://github.com/biztrip-ai/cloud-agents/tree/main/bizzybot';
+const REPO_URL = 'https://github.com/biztrip-ai/cloud-agents';
 
 function fmtAgo(ts) {
   if (!ts) return 'never';
