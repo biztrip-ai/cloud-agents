@@ -9,6 +9,12 @@ Each directory under `skills/` is one skill in the standard Claude Code layout
 `.claude/skills` is a symlink to `skills/`, so every skill is available when
 running Claude Code inside this repo.
 
+![How the pieces fit: a Slack workspace with the BzPM, Builder and Merger bots
+talks to Central Dispatch on Railway, which reaches the three AWS cloud agents;
+the bizzybot bridge runs inside each one; the cloud-agents repo supplies both
+Central Dispatch and the agents' factory definitions; each agent clones the
+btdash repo it works in.](docs/cloud-agent-factory.png)
+
 ## What's here
 
 | Path | What |
