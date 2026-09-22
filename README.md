@@ -6,6 +6,15 @@ Each directory under `skills/` is one skill in the standard Claude Code layout
 `.claude/skills` is a symlink to `skills/`, so every skill is available when
 running Claude Code inside this repo.
 
+## What's here
+
+| Path | What |
+|---|---|
+| `skills/provision-cloud-agent/` | How to build an agent: host, coding agent, control plane, GitHub, env, verification |
+| `bin/agents` | Read and update a company's encrypted agent manifest |
+| `bizzybot/` | The Bizzybot control plane: `central-dispatch/` (server) and `agent-wrapper/` (the bridge each box runs) |
+| `factory/` | The BizTrip pipeline's role protocols (BzPM, Builder, Merger) |
+
 ## Company agent manifests
 
 What each company has provisioned is recorded in an encrypted manifest,
