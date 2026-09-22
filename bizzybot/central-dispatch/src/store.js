@@ -1,0 +1,245 @@
+// Plain data-access functions over the db layer. Async so the same code works on
+// SQLite (sync driver, resolves immediately) and Postgres (async driver).
+import { randomUUID, randomBytes } from 'node:crypto';
+import { get, all, run, tx, isPg, AGENTS, EVENTS, WORKSPACE_SETTINGS } from './db.js';
+
+export async function createAgent(name) {
+  const id = randomUUID();
+  const registrationToken = randomBytes(24).toString('hex');
+  await run(
+    `INSERT INTO ${AGENTS} (id, name, registration_token, created_at) VALUES (?, ?, ?, ?)`,
+    [id, name, registrationToken, Date.now()],
+  );
+  return { id, name, registrationToken };
+}
+
+export async function getAgentByToken(token) {
+  return get(`SELECT * FROM ${AGENTS} WHERE registration_token = ?`, [token]);
+}
+
+export async function listAgents() {
+  const rows = await all(
+    `SELECT id, name, slack_team_id, slack_app_id, registered_at, last_seen_at,
+            CASE WHEN slack_bot_token IS NOT NULL AND slack_bot_token <> '' THEN 1 ELSE 0 END AS slack_connected
+       FROM ${AGENTS} ORDER BY created_at`,
+  );
+  return rows.map((r) => ({
+    ...r,
+    slack_connected: Boolean(Number(r.slack_connected)),
+  }));
+}
+
+export async function getAgentById(id) {
+  return get(`SELECT * FROM ${AGENTS} WHERE id = ?`, [id]);
+}
+
+// All agents bound to a workspace (one per installed Slack app), for the
+// per-tenant dashboard. Includes the registration token so each card can show it.
+export async function listAgentsByTeam(teamId) {
+  return all(
+    `SELECT id, name, slack_app_id, registration_token, last_seen_at,
+            email_local_part, email_channel, email_sender_allow, sponsor_slack_user_id
+       FROM ${AGENTS} WHERE slack_team_id = ? ORDER BY created_at`,
+    [teamId],
+  );
+}
+
+// --- Inbound email (see docs/EMAIL.md) --------------------------------------
+
+const orNull = (v) => {
+  const s = (v ?? '').toString().trim();
+  return s === '' ? null : s;
+};
+
+// The agent in a workspace that owns a given inbound local-part (the recipient
+// mailbox of an email), used by the poller to route mail to an agent.
+export async function getAgentByEmailLocalPart(teamId, localPart) {
+  if (!teamId || !localPart) return null;
+  return get(
+    `SELECT * FROM ${AGENTS} WHERE slack_team_id = ? AND email_local_part = ? LIMIT 1`,
+    [teamId, localPart],
+  );
+}
+
+// Set (or clear) an agent's email routing config. Empty values become NULL so a
+// cleared local-part/channel disables email for that agent.
+export async function setAgentEmail(id, { localPart, channel, senderAllow } = {}) {
+  await run(
+    `UPDATE ${AGENTS}
+        SET email_local_part = ?, email_channel = ?, email_sender_allow = ?
+      WHERE id = ?`,
+    [orNull(localPart), orNull(channel), orNull(senderAllow), id],
+  );
+}
+
+export async function getWorkspaceSettings(teamId) {
+  if (!teamId) return null;
+  return get(`SELECT * FROM ${WORKSPACE_SETTINGS} WHERE team_id = ?`, [teamId]);
+}
+
+// Upsert a workspace's Mailgun config + default sender allow-list. Empty values
+// become NULL.
+export async function setWorkspaceSettings(
+  teamId,
+  { domain, apiKey, baseUrl, senderAllow } = {},
+) {
+  await run(
+    `INSERT INTO ${WORKSPACE_SETTINGS}
+       (team_id, mailgun_domain, mailgun_api_key, mailgun_base_url, sender_allow, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (team_id) DO UPDATE SET
+       mailgun_domain   = excluded.mailgun_domain,
+       mailgun_api_key  = excluded.mailgun_api_key,
+       mailgun_base_url = excluded.mailgun_base_url,
+       sender_allow     = excluded.sender_allow,
+       updated_at       = excluded.updated_at`,
+    [teamId, orNull(domain), orNull(apiKey), orNull(baseUrl), orNull(senderAllow), Date.now()],
+  );
+}
+
+// Every workspace that has Mailgun fully configured — the poller's work list.
+export async function listConfiguredWorkspaces() {
+  return all(
+    `SELECT team_id, mailgun_domain, mailgun_api_key, mailgun_base_url, sender_allow
+       FROM ${WORKSPACE_SETTINGS}
+      WHERE mailgun_domain  IS NOT NULL AND mailgun_domain  <> ''
+        AND mailgun_api_key IS NOT NULL AND mailgun_api_key <> ''`,
+  );
+}
+
+// Record that we just saw the agent's agent-wrapper (connect/disconnect), for the
+// "last seen" indicator when it's offline.
+export async function touchAgentSeen(id) {
+  await run(`UPDATE ${AGENTS} SET last_seen_at = ? WHERE id = ?`, [Date.now(), id]);
+}
+
+// The (first) agent bound to a Slack workspace, so re-authorizing the same
+// workspace reuses its agent + registration token instead of piling up new ones.
+export async function getAgentByTeam(teamId) {
+  return get(
+    `SELECT * FROM ${AGENTS} WHERE slack_team_id = ? ORDER BY created_at LIMIT 1`,
+    [teamId],
+  );
+}
+
+// The agent for a specific Slack app within a workspace. With multiple cloned
+// apps in one workspace, (team_id, app_id) — not team_id alone — identifies an
+// agent, so re-installing the same app reuses its agent + registration token.
+export async function getAgentByTeamAndApp(teamId, appId) {
+  if (!appId) return getAgentByTeam(teamId);
+  return get(
+    `SELECT * FROM ${AGENTS} WHERE slack_team_id = ? AND slack_app_id = ? ORDER BY created_at LIMIT 1`,
+    [teamId, appId],
+  );
+}
+
+export async function setAgentSlack(id, { teamId, appId, botToken } = {}) {
+  await run(
+    `UPDATE ${AGENTS} SET slack_team_id = ?, slack_app_id = ?, slack_bot_token = ? WHERE id = ?`,
+    [teamId ?? null, appId ?? null, botToken ?? null, id],
+  );
+}
+
+// The agent's sponsor: the human responsible for it (and the only one who may
+// run shell commands through it). Claimed by the first install and sticky from
+// then on — a later reinstall by someone else doesn't take it over. Use
+// setAgentSponsor to hand it to someone else deliberately.
+export async function claimAgentSponsor(id, slackUserId) {
+  if (!slackUserId) return;
+  await run(
+    `UPDATE ${AGENTS} SET sponsor_slack_user_id = ?
+      WHERE id = ? AND (sponsor_slack_user_id IS NULL OR sponsor_slack_user_id = '')`,
+    [slackUserId, id],
+  );
+}
+
+export async function setAgentSponsor(id, slackUserId) {
+  await run(`UPDATE ${AGENTS} SET sponsor_slack_user_id = ? WHERE id = ?`, [
+    orNull(slackUserId),
+    id,
+  ]);
+}
+
+export async function markRegistered(id, { teamId, botToken } = {}) {
+  await run(
+    `UPDATE ${AGENTS}
+        SET registered_at   = ?,
+            slack_team_id    = COALESCE(?, slack_team_id),
+            slack_bot_token  = COALESCE(?, slack_bot_token)
+      WHERE id = ?`,
+    [Date.now(), teamId ?? null, botToken ?? null, id],
+  );
+}
+
+// Append an event with the next per-agent sequence number. The seq comes from an
+// atomic bump of the agent's `event_seq` counter, so concurrent appends to the
+// same agent get distinct, gap-free, monotonically increasing seqs (no lost
+// events). On Postgres this runs in a transaction (the counter bump takes a row
+// lock, serializing per agent, and a failed insert rolls the bump back). SQLite
+// is single-process/synchronous, so the two statements suffice. Seq order equals
+// insert order, which the replay logic in wsHub relies on.
+export async function appendEvent(agentId, type, payload) {
+  const data = JSON.stringify(payload);
+  const doIt = async (q) => {
+    const row = await q.get(
+      `UPDATE ${AGENTS} SET event_seq = event_seq + 1 WHERE id = ? RETURNING event_seq AS seq`,
+      [agentId],
+    );
+    const seq = Number(row.seq);
+    await q.run(
+      `INSERT INTO ${EVENTS} (agent_id, seq, type, payload, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [agentId, seq, type, data, Date.now()],
+    );
+    return { seq, type, payload };
+  };
+  return isPg ? tx(doIt) : doIt({ get, run });
+}
+
+// Discard events older than `cutoffTs` (epoch ms) for an agent. The event log
+// exists only to wake a briefly-sleeping agent — a message that's been sitting
+// for more than a few minutes is stale and must never be processed. Returns how
+// many were dropped.
+export async function deleteStaleEvents(agentId, cutoffTs) {
+  const row = await get(
+    `SELECT COUNT(*) AS n FROM ${EVENTS} WHERE agent_id = ? AND created_at < ?`,
+    [agentId, cutoffTs],
+  );
+  const n = Number(row?.n || 0);
+  if (n > 0) {
+    await run(`DELETE FROM ${EVENTS} WHERE agent_id = ? AND created_at < ?`, [agentId, cutoffTs]);
+  }
+  return n;
+}
+
+// Sweep stale events across all agents (periodic hygiene, in case an agent
+// stays offline and never reconnects to trigger the per-agent discard).
+export async function deleteAllStaleEvents(cutoffTs) {
+  const row = await get(`SELECT COUNT(*) AS n FROM ${EVENTS} WHERE created_at < ?`, [cutoffTs]);
+  const n = Number(row?.n || 0);
+  if (n > 0) {
+    await run(`DELETE FROM ${EVENTS} WHERE created_at < ?`, [cutoffTs]);
+  }
+  return n;
+}
+
+export async function eventsAfter(agentId, afterSeq) {
+  const rows = await all(
+    `SELECT seq, type, payload FROM ${EVENTS}
+      WHERE agent_id = ? AND seq > ? ORDER BY seq ASC`,
+    [agentId, afterSeq],
+  );
+  return rows.map((r) => ({ seq: Number(r.seq), type: r.type, payload: JSON.parse(r.payload) }));
+}
+
+export async function ackSeq(agentId, seq) {
+  await run(`UPDATE ${AGENTS} SET last_acked_seq = ? WHERE id = ? AND ? > last_acked_seq`, [
+    seq,
+    agentId,
+    seq,
+  ]);
+  // An ack means the agent processed everything up to `seq`, so remove those
+  // events from the log — it's a queue, not an archive. Keeps storage bounded
+  // and means a reconnect never re-delivers already-processed events.
+  await run(`DELETE FROM ${EVENTS} WHERE agent_id = ? AND seq <= ?`, [agentId, seq]);
+}

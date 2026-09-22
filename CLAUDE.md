@@ -9,14 +9,22 @@ own records in a private repo.
   plane (Bizzybot/Slack, Flow), GitHub access, env vars and a bootstrap check.
   `.claude/skills` symlinks to `skills/`.
 - **`bin/agents`**: reads and updates a company's encrypted agent manifest.
-- **Company data** is *not* in this repo. `CLOUD_AGENTS_HOME` points to a
-  directory in the company's private repo that holds `.sops.yaml` and
-  `companies/<company>/agents.sops.json`, the record of every agent the company
-  runs, how to reach it, and its SSH key.
+- **`bizzybot/`**: the Bizzybot control plane itself — `central-dispatch/` (the
+  Node server agents dial into, deployed on Railway) and `agent-wrapper/` (the
+  Python bridge each agent box runs, installed with
+  `uv tool install "git+https://github.com/biztrip-ai/cloud-agents.git#subdirectory=bizzybot/agent-wrapper"`).
+- **`factory/`**: the BizTrip agent pipeline — one `PROTOCOL.md` per role
+  (BzPM, Builder, Merger) that each agent loads through `AGENT_PROMPT_FILE`,
+  plus its `agent.env.example`.
+- **Secrets and per-agent records** are *not* in this repo. `CLOUD_AGENTS_HOME`
+  points to a directory in the company's private repo that holds `.sops.yaml`
+  and `companies/<company>/agents.sops.json`, the record of every agent the
+  company runs, how to reach it, and its SSH key.
 
-**Never commit company data here.** That means manifests, Slack app IDs,
-hostnames and IPs, account IDs, and company-specific runbooks. They go in the
-company's private repo, next to its manifest.
+**Never commit secrets here.** Tokens, keys, manifests and anything that
+decrypts them belong in the private repo. Names, board keys, channel names and
+hostnames are fine: this repo is public, so treat everything in it as readable
+by anyone.
 
 ## The agent manifest
 

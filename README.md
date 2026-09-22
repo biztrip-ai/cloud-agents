@@ -1,10 +1,63 @@
 # cloud-agents
 
-Agent skills for working with [Flow](https://github.com/freeflow-community/flow).
+Everything for running fleets of always-on cloud coding agents: the Bizzybot
+control plane they talk through, the skill that provisions them, the tool that
+tracks them, and the role protocols they work to.
+
 Each directory under `skills/` is one skill in the standard Claude Code layout
 (`<name>/SKILL.md`, plus optional `references/` and `scripts/`). The repo's
 `.claude/skills` is a symlink to `skills/`, so every skill is available when
 running Claude Code inside this repo.
+
+## What's here
+
+| Path | What |
+|---|---|
+| `skills/provision-cloud-agent/` | How to build an agent: host, coding agent, control plane, GitHub, env, verification |
+| `bin/agents` | Read and update a company's encrypted agent manifest |
+| `bizzybot/` | The Bizzybot control plane: `central-dispatch/` (server) and `agent-wrapper/` (the bridge each box runs) |
+| `factory/` | The BizTrip pipeline's role protocols (BzPM, Builder, Merger) |
+
+## Running the Bizzybot bridge
+
+The bridge (`bizzybot/agent-wrapper/`) is what makes a machine an agent: it
+dials out to Central-Dispatch over a WebSocket, receives Slack events, and
+drives Claude Code. Run it on any machine you want to reach from Slack — an
+agent box, or your laptop.
+
+```sh
+uv tool install "git+https://github.com/biztrip-ai/cloud-agents.git#subdirectory=bizzybot/agent-wrapper"
+bizzybot        # prompts once for the registration token, then caches it
+```
+
+Get the registration token from the agent's card on the Central-Dispatch
+dashboard. Non-interactively (how the cloud agents run it), set it in the
+environment instead:
+
+```sh
+REGISTRATION_TOKEN=<token> \
+CLAUDE_CWD=/workspaces/projects/btdash \
+CLAUDE_PERMISSION_MODE=bypassPermissions \
+BIZZYBOT_STATE_DIR=/workspaces/<handle> \
+  bizzybot
+```
+
+Useful extras: `CLAUDE_MODEL` pins the model, `AGENT_PROMPT_FILE` appends a
+role protocol (see `factory/`), and `AGENT_MENTIONS_FROM` lets other agents
+wake this one. `bizzybot/agent-wrapper/README.md` documents them all, plus
+`bizzybot-dropbox` for getting secrets onto a box.
+
+On a provisioned box the bridge runs under systemd rather than by hand:
+
+```sh
+sudo systemctl restart agent.service
+journalctl -u agent.service -f        # preflight ✓ lines, then "connected to Central-Dispatch"
+```
+
+To upgrade it: `uv tool upgrade bizzybot-agent-wrapper && sudo systemctl restart agent.service`.
+
+The server half (`bizzybot/central-dispatch/`) is deployed once per fleet, on
+Railway; see its README to run one locally.
 
 ## Company agent manifests
 
@@ -29,7 +82,7 @@ Clone the repo and symlink (or copy) the skills you want into a skills
 directory Claude Code reads:
 
 ```sh
-git clone git@github.com:freeflow-community/cloud-agents.git
+git clone git@github.com:biztrip-ai/cloud-agents.git
 ln -s "$PWD/cloud-agents/skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-agent
 ```
 

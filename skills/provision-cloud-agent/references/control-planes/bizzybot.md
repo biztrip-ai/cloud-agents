@@ -2,7 +2,7 @@
 
 Makes the agent a Slack app user (`@bizzy`, `@cosmo`, `@omni` on the hosted
 Central-Dispatch, or your own app if you self-host it). Source:
-https://github.com/biztrip-ai/bizzybot — the `agent-wrapper/` half runs on
+https://github.com/biztrip-ai/cloud-agents (`bizzybot/`) — the `agent-wrapper/` half runs on
 the box; it dials out over a WebSocket to Central-Dispatch, so no inbound
 ports. Requires coding agent **Claude** (it drives Claude Code via the
 Agent SDK); `gh` on PATH.
@@ -30,7 +30,7 @@ Python tool via `uv`; with `UV_TOOL_DIR`/`UV_TOOL_BIN_DIR` from the host's
 base env it lands under `/workspaces/.uv` and `bizzybot` is on PATH:
 
 ```sh
-uv tool install "git+https://github.com/biztrip-ai/bizzybot.git#subdirectory=agent-wrapper"
+uv tool install "git+https://github.com/biztrip-ai/cloud-agents.git#subdirectory=bizzybot/agent-wrapper"
 bizzybot --help >/dev/null 2>&1 || command -v bizzybot   # proves the entrypoint exists
 ```
 

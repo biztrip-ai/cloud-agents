@@ -1,0 +1,17 @@
+node_modules/
+*.db
+*.db-journal
+*.db-wal
+.env
+.certs/
+.DS_Store
+
+# agent-wrapper (python)
+.venv/
+__pycache__/
+dist/
+*.egg-info/
+# legacy state files (runtime state now lives in ~/.claudebot)
+.agent-wrapper-state.json
+.agent-wrapper-config.json
+.sessions.json
