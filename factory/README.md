@@ -28,15 +28,20 @@ https://biztrip-team.atlassian.net/jira/software/projects/BP/boards/168
 | **Human Review** | BzPM | Needs Scott: a risky change, a product decision, or something BzPM can't judge |
 
 ```
-Scott ─▶ BzPM: ticket (To Do) ─▶ "Build it?" ─▶ Ready ─▶ @builder build BP-n
-                                                            │
-             Builder: #bp-n channel, In Progress ─▶ PR ─▶ In Review
-                                                            │
-      BzPM ◀── "@bzpm BP-n is done: PR #x" (#factory) ──────┘
-        │ review
-        ├─ approve ─▶ "@merger merge PR #x" ─▶ merge ─▶ deploy green ─▶ Done
-        ├─ changes ─▶ back to In Progress, "@builder PR #x needs changes"
-        └─ needs a human ─▶ Human Review, Scott decides
+#factory:  Scott ─▶ BzPM: ticket (To Do) ─▶ "Build it?" ─▶ Ready
+                                                   │
+                                      "@builder build BP-n"
+                                                   ▼
+#bp-n:     Builder opens the channel (Scott, BzPM, Merger invited)
+           In Progress ─▶ plan ─▶ work ─▶ PR ─▶ In Review
+                     └─▶ "@bzpm BP-n is done: PR #x"
+                                  │ BzPM reviews here
+                                  ├─ approve ─▶ "@merger merge PR #x"
+                                  │             └─▶ merge ─▶ deploy green ─▶ Done ─▶ ✅
+                                  ├─ changes ─▶ In Progress, "@builder PR #x needs changes"
+                                  └─ needs a human ─▶ Human Review (BzPM tells Scott in #factory)
+
+#factory:  BzPM relays the result to Scott
 ```
 
 Agents use the Atlassian MCP (`mcp__atlassian__*`, site
@@ -44,16 +49,19 @@ Agents use the Atlassian MCP (`mcp__atlassian__*`, site
 
 ## Slack
 
-- **`#factory`**: the one shared channel for Scott, BzPM, Builder and
-  Merger. Every hand-off is one line here opening with the target's Slack
-  handle: `@bzpm`, `@builder`, `@merger` or `@scottp`. The bridge turns a
-  known handle into a real `<@U…>` mention, so that is what wakes the
-  target; a handle in backticks, a real name with spaces (`@Scott Persinger`) or a
-  hand-typed, HTML-escaped token (`&lt;@U…&gt;`) wakes nobody. Builder also
-  posts one screenshot per finished UI change.
-- **`#bp-<n>`**: one per ticket, created by Builder. The plan, a message per
-  finished step, and the PR link. Post there to steer Builder. Merger adds a
-  ✅ when it's merged.
+- **`#factory`**: Scott and BzPM. Requests, "Build it?", the dispatch to
+  Builder, status back to Scott, and anything needing Human Review.
+- **`#bp-<n>`**: one per ticket, created by Builder, with Scott, BzPM and
+  Merger invited. Everything about that ticket happens here: the plan, a
+  message per finished step, screenshots, the PR, BzPM's review verdict, the
+  merge hand-off, and Merger's result. Post there to steer Builder. Merger
+  adds a ✅ when it's merged.
+
+Every hand-off is one line opening with the target's Slack handle: `@bzpm`,
+`@builder`, `@merger` or `@scottp`. The bridge turns a known handle into a
+real `<@U…>` mention, so that is what wakes the target; a handle in backticks,
+a real name with spaces (`@Scott Persinger`) or a hand-typed, HTML-escaped
+token (`&lt;@U…&gt;`) wakes nobody.
 
 Loop guards (enforced by the bridge, restated in each protocol): an agent only
 wakes on a message that mentions it (from Scott or an allowlisted agent). A

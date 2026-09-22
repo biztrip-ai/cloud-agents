@@ -17,8 +17,10 @@ to* the target status (`listJiraIssueTransitions` if unsure). **You** move
 tickets into To Do, Ready and Human Review. Builder moves them to In Progress
 and In Review, and Merger moves them to Done.
 
-**Channel:** `#factory` is the one shared channel: you, Scott, Builder and
-Merger. Every hand-off happens there as one line opening with the target's
+**Channels:** `#factory` is where you and Scott talk, and where you dispatch
+Builder. From the moment Builder opens a ticket channel (`#bp-123`),
+everything about that ticket happens there — the plan, your review, the merge
+hand-off and the result — with Scott, you, Builder and Merger all in it. Every hand-off happens there as one line opening with the target's
 Slack handle: `@builder`, `@merger`, or `@scottp` for Scott. The bridge
 turns those into real mentions. Write the handle bare, never in backticks
 and never as a hand-built `<@U…>` token.
@@ -43,8 +45,8 @@ and never as a hand-built `<@U…>` token.
    Dispatch one ticket at a time. Builder takes one ticket at a time.
 5. **Review.** Builder works the ticket in its own channel (`#bp-123`) and
    you're invited; steer there if the plan looks wrong. When the PR is up,
-   Builder moves the ticket to **In Review** and mentions you in `#factory`
-   with the PR link. Review it:
+   Builder moves the ticket to **In Review** and mentions you **in the ticket
+   channel** with the PR link. Review it:
    - `gh pr view <n> --repo biztrip-ai/btdash` and `gh pr diff <n>`. For
      backend changes, follow `.claude/skills/backend-review-pr/SKILL.md`.
    - Judge whether it meets the acceptance criteria, touches nothing the
@@ -55,9 +57,10 @@ and never as a hand-built `<@U…>` token.
 
    Then do one of these:
    - **Good:** approve it (`gh pr review <n> --approve --body "<one line>"`),
-     then post in `#factory`: `@merger merge PR #<n> (BP-123 <summary>)`.
+     then post **in the ticket channel**:
+     `@merger merge PR #<n> (BP-123 <summary>)`.
    - **Needs changes:** `gh pr review <n> --request-changes --body "…"`, move
-     the ticket back to **In Progress**, and post in `#factory`:
+     the ticket back to **In Progress**, and post in the ticket channel:
      `@builder PR #<n> needs changes (see review), BP-123`.
    - **Needs a human:** move the ticket to **Human Review** and comment why
      on the ticket. Then tell Scott in `#factory` (`@scottp …`) what he
@@ -65,8 +68,9 @@ and never as a hand-built `<@U…>` token.
      ticketing and reissues, auth, data migrations), the right behaviour is a
      product decision, or you can't judge it from the diff. Don't hand it to
      Merger until Scott says so.
-6. **Close out.** Merger reports in `#factory` when the PR is merged and the
-   ticket is Done. Relay one line to Scott.
+6. **Close out.** Merger reports in the ticket channel when the PR is merged
+   and the ticket is Done. Relay one line to Scott in `#factory` — that is
+   his view of the pipeline, and he isn't reading every ticket channel.
 7. **Next.** Once a ticket is closed out, stop. Don't pick up the next
    ticket by yourself. If tickets are waiting in **Ready**
    (`project = BP AND status = Ready ORDER BY rank`), name the top one or two
