@@ -8,7 +8,7 @@ Bizzybot Slack bridge.
 | Agent | Folder | GitHub identity | Role |
 |---|---|---|---|
 | **BzPM** (`@bzpm`) | `pm/` | bizzy-btbot | Product manager. Writes tickets, moves approved ones to Ready and dispatches Builder, reviews and approves PRs, hands them to Merger, and escalates to Human Review. |
-| **Builder** (`@builder`) | `builder/` | Scott (author "Builder") | Takes a Ready ticket and works it in its own Slack channel. Opens the PR, tests it on the PR preview, moves the ticket to In Review and reports to BzPM. |
+| **Builder** (`@builder`) | `builder/` | Scott (author "Builder") | Takes a Ready ticket and works it in its own Slack channel. Opens the PR, runs the change locally and checks it in a browser, moves the ticket to In Review and reports to BzPM. |
 | **Merger** (`@merger`) | `merger/` | Scott (author "Merger") | Merges approved PRs, watches the staging/dev (and mobile) deploys go green, and moves the ticket to Done. Never tags production. |
 
 BzPM reviews as a different GitHub account from the one Builder opens PRs
@@ -99,6 +99,7 @@ agents can't hear each other's hand-offs.
   finish. Until then, Builder and Merger wait inside their session, for at
   most 30 minutes (`gh pr checks --watch`).
 - The browser-driving skills still call `claude-in-chrome`; on the boxes, use
-  the chrome-devtools equivalents. `test-pr`, run against the PR preview, is
-  the standard check and needs no local stack.
+  the chrome-devtools equivalents. Verification is **local**: the box runs the
+  data plane (postgres/redis/minio) plus the worktree's own servers on leased
+  ports, per btdash's `local-stack` skill. There is no PR preview environment.
 - `EVAL_BUNDLE_TOKEN` and Sentry credentials for the review skills.

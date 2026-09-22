@@ -49,8 +49,9 @@ and never as a hand-built `<@U…>` token.
      backend changes, follow `.claude/skills/backend-review-pr/SKILL.md`.
    - Judge whether it meets the acceptance criteria, touches nothing the
      ticket didn't ask for, has a plain-English description, and has
-     screenshots for UI changes. Confirm the PR preview
-     (`pr-<n>.dev.biztrip.ai`) was tested.
+     screenshots for UI changes. Confirm Builder actually ran the change
+     locally and said what it saw — there is no preview environment, so the
+     ticket channel's log and the screenshots are the evidence.
 
    Then do one of these:
    - **Good:** approve it (`gh pr review <n> --approve --body "<one line>"`),

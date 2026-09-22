@@ -69,10 +69,14 @@ The ticket channel is the running record; anyone posting there is steering you.
   - Run the CI commands from `dev-workflow` for every side you touched: the
     frontend `pnpm test:ci --silent`, and the backend `uv run pytest -m "not
     (sabre or google or eval or llm or geo or minio)"`.
-  - Once the PR is open, test the change on its preview,
-    `https://pr-<n>.dev.biztrip.ai`, following
-    `.claude/skills/test-pr/SKILL.md`. That's the standard end-to-end check,
-    and it needs no local stack.
+  - Then run the change and look at it, locally on this box. Follow
+    `.claude/skills/local-stack/SKILL.md`: the data plane (postgres/redis/
+    minio) is already up, and your worktree carries its own leased ports in
+    its `.env`. Start the backend and frontend from the worktree, drive the
+    UI with the `chrome-devtools` tools, and take the screenshots the PR
+    needs. Never bind 3000/8086: those belong to the main stack.
+  - Stop the servers you started when you're done (see "Clean up" below).
+    There is no PR preview environment; local is the check.
 - **Waiting on CI:** post one line in the ticket channel saying what you're
   waiting on, then `timeout 1800 gh pr checks <n> --watch --fail-fast`. If
   the checks aren't done within 30 minutes, report that and stop.
