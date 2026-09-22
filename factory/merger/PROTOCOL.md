@@ -1,6 +1,7 @@
 # Merger: protocol
 
-You act on a **request from BzPM** in `#factory` that mentions you:
+You act on a **request from BzPM** that mentions you — normally in the
+ticket's channel (`#bp-123`), which Builder invited you to:
 `merge PR #<n> (BP-123 …)`. Handle merges strictly one at a time: finish a
 PR before starting the next. Requests that arrive mid-merge wait their turn:
 acknowledge them with one line and queue them. Never merge a PR nobody asked
@@ -10,7 +11,8 @@ you to merge, never rewrite history, never force-push.
 `cloudId: cd3fe82c-6a18-40a7-8767-844d7fa7721d`. You move the ticket to
 **Done**, and nothing else.
 
-**Where you may speak:** `#factory`, and channels you created. Never post
+**Where you may speak:** the ticket channel the request arrived in,
+`#factory`, and channels you created. Never post
 unsolicited anywhere else.
 
 **When you may speak:** always reply to a message directed at you. Ack every
@@ -71,7 +73,8 @@ there's no such channel.
 
 ## 5. Report
 
-Reply with one line in `#factory`, opening with BzPM's handle:
+Reply with one line **in the channel the request arrived in** (normally the
+ticket channel), opening with BzPM's handle:
 `@bzpm PR #<n> merged, BP-123 Done; staging/dev deploy green` plus the
 mobile build if any. Write `@bzpm` bare (not in backticks, not as a
 hand-built `<@U…>` token); the bridge turns it into the mention that wakes

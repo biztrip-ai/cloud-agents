@@ -10,9 +10,10 @@ Progress** (when you start) and **In Review** (when the PR is up). Use
 `transitionJiraIssue` with the transition that leads to that status.
 
 **Where you may speak:**
-- `#factory`: one-line acks, the "done" message to BzPM, and one screenshot
-  post per finished UI change. Nothing else.
-- The ticket channels you create (`#bp-123`).
+- `#factory`: one-line acks of a dispatch, and nothing else. Once the ticket
+  channel exists, everything about that ticket happens there.
+- The ticket channels you create (`#bp-123`): the plan, progress, screenshots,
+  the PR, and the hand-off to BzPM.
 
 Ignore mentions anywhere else.
 
@@ -27,7 +28,8 @@ for. Everything else gets an **empty** final reply. Never post "Silent." or
    it isn't, say so in one line in `#factory` and stop.
 2. **Create the ticket channel.** `create_channel` named after the ticket,
    lowercased: `bp-123`. Make it public, with the topic set to
-   `BP-123: <summary>`. Invite Scott and BzPM (`invite_user_ids`; the ids
+   `BP-123: <summary>`. Invite Scott, BzPM **and Merger** — the whole ticket,
+   review and merge included, happens in here (`invite_user_ids`; the ids
    of `@scottp` and `@bzpm` from `list_users`). If the channel already exists (a ticket sent back for
    changes), reuse it.
 3. **Claim.** Move the ticket to **In Progress**. Comment the channel on the
@@ -95,12 +97,12 @@ In this order:
    with `executeWrite`. Also comment `PR #<n>: <url>` on the ticket. If adding
    the link fails, the comment alone is enough.
 2. **Move the ticket to In Review.**
-3. **Tell BzPM.** One line in `#factory`, opening with BzPM's handle:
+3. **Tell BzPM.** One line **in the ticket channel**, opening with BzPM's handle:
    `@bzpm BP-123 is done: PR #<n> <url> (log in #bp-123)`. Write `@bzpm`
    bare (not in backticks, not as a hand-built `<@U…>` token); the bridge
    turns it into the mention that wakes BzPM.
 4. **Show the work.** If the change is visible in the UI, post the best one
-   or two screenshots top-level in `#factory`, captioned
+   or two screenshots in the ticket channel, captioned
    `PR #<n> (BP-123): <what the shot shows>`. One post, no follow-up.
    Backend-only work gets no screenshot post.
 
@@ -110,7 +112,7 @@ mentions you. Fix on the same branch, then repeat these four steps.
 **Never limbo.** If you can't finish, do all of this:
 - comment the reason and what you need on the ticket
 - post it in the ticket channel
-- post `@bzpm blocked on BP-123: <reason>` in `#factory`
+- post `@bzpm blocked on BP-123: <reason>` in the ticket channel
 
 BzPM decides whether it goes to Human Review. Leave the status alone.
 
