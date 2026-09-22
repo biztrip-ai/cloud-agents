@@ -29,7 +29,7 @@ Clone the repo and symlink (or copy) the skills you want into a skills
 directory Claude Code reads:
 
 ```sh
-git clone git@github.com:freeflow-community/cloud-agents.git
+git clone git@github.com:biztrip-ai/cloud-agents.git
 ln -s "$PWD/cloud-agents/skills/provision-cloud-agent" ~/.claude/skills/provision-cloud-agent
 ```
 
