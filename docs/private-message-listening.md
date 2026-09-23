@@ -162,12 +162,85 @@ to the bridge at registration. Memories live on the agent's box under
 `/workspaces/<handle>/memory/`, one file per topic, each noting the
 conversation and date it came from.
 
+## Passive listening in named channels
+
+For a channel — public or private — the simplest consent is an **invite**: a
+person adds the agent to the channel, everyone sees it in the member list, and
+no user token is involved. Private channels work the same way, since the bot
+already holds `groups:history` and `groups:read`.
+
+What's missing is bridge support. Today a channel message only wakes an agent
+if it @-mentions it, is a reply in a thread the agent is already in, or is in a
+channel the agent created. A channel the agent was merely invited to is
+ignored. **Passive listening mode** changes that for named channels.
+
+### Delivery: batch the events we already get
+
+Central-Dispatch already fans out `message.channels` and `message.groups`
+events for every channel the app is in, so passive listening needs **no extra
+API calls and no polling**. The bridge:
+
+1. Collects messages for a passively-listened channel in a buffer instead of
+   dropping them.
+2. Flushes the buffer as one **silent turn** when it is ~2 minutes old or
+   reaches a size cap, with a payload like:
+
+   > New messages in `#<channel>` (passive listening):
+   > `<messages>`
+
+3. Skips anything already handled as a normal turn: a message that mentions the
+   agent wakes it the usual way, and is dropped from the batch by `ts` so it
+   isn't seen twice.
+
+One turn per batch, not per message — a busy channel would otherwise be
+expensive and noisy.
+
+### What's in a batch
+
+- Human messages, with author ids resolved to names.
+- Not the agent's own messages, and not other agents' messages unless they are
+  in `AGENT_MENTIONS_FROM`: otherwise two listening agents can feed each other.
+- Edits and deletions are ignored; the batch is what was said, when.
+
+### Turning it on
+
+Per agent, and per channel. Options, in the order I'd pick them:
+
+1. **`PASSIVE_LISTEN_CHANNELS`** — explicit channel ids in `agent.env`. Boring,
+   obvious, and reviewable in the manifest.
+2. **`PASSIVE_LISTEN=members`** — every channel the agent is invited to.
+   Simplest to operate: invite it and it listens, remove it and it stops. The
+   risk is quietly listening to a channel someone invited it to for one
+   question.
+3. **A command in the channel** (`@agent listen here` / `stop listening`),
+   stored in the agent's state dir, so it's controlled by the people in the
+   channel rather than by whoever edits `agent.env`.
+
+(1) and (3) compose well: a default list, adjustable in the room.
+
+### Announcing itself
+
+On joining a channel with passive listening on, the agent posts one line —
+*"I'm listening in this channel and will remember what's useful"* — so
+membership isn't the only signal. It says nothing after that unless mentioned.
+
+### Why this is different from group DMs
+
+| | Named channel | Group DM |
+|---|---|---|
+| How it gets in | Invited; visible in the member list | Can't be a member at all |
+| Reads with | Bot token | An authorizing user's token |
+| Consent | The invite, plus the joining notice | Two ✅ reactions in the conversation |
+| Delivery | Events already fanned out, batched | Polling every 2 minutes |
+
 ## Public-channel review
 
-Separate and much simpler. A poller in the bridge, shaped like `pr_poller` and
-`sentry_poller`: on an interval it reads what's new in the **public channels
-the bot is a member of**, using the bot token, and starts a turn with a digest
-prompt. Nothing is hidden — a bot in a public channel is visible to everyone —
+A periodic *digest* is a different job from passive listening: rather than
+reacting to what arrives, it looks back over a window and summarises. A poller
+in the bridge, shaped like `pr_poller` and `sentry_poller`, reads what's new in
+the channels the bot is a member of and starts a turn with a digest prompt. If
+passive listening is already on for those channels, the digest can run off what
+the agent remembered instead of re-reading Slack. Nothing is hidden — a bot in a public channel is visible to everyone —
 so no approval flow is needed. Open choices: interval, which channels, and
 whether it always posts a digest or speaks only when something crosses a bar.
 
