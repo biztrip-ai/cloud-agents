@@ -352,11 +352,25 @@ class PrivateDMListener:
             return
         uid, client = picked
         try:
-            resp = await client.reactions_get(channel=cid, timestamp=convo["prompt_ts"], full=True)
+            # Fetch the prompt message itself — oldest == latest == its ts,
+            # inclusive — because a message carries its own reactions. The
+            # obvious call, reactions.get, would need a reactions:read scope on
+            # everyone's token, and a scope we can do without is a scope we
+            # don't ask for.
+            resp = await client.conversations_history(
+                channel=cid,
+                oldest=convo["prompt_ts"],
+                latest=convo["prompt_ts"],
+                inclusive=True,
+                limit=1,
+            )
         except SlackApiError as e:
-            self._on_api_error(uid, e, "reactions.get")
+            self._on_api_error(uid, e, "conversations.history (approval)")
             return
-        reactions = ((resp.get("message") or {}).get("reactions")) or []
+        msgs = resp.get("messages") or []
+        # Slack truncates a long `users` list, so treat it as a lower bound: an
+        # approval needs an authorizing user we can actually see in it.
+        reactions = (msgs[0].get("reactions") if msgs else None) or []
         by_name = {r.get("name"): set(r.get("users") or []) for r in reactions}
         if by_name.get(DECLINE):
             convo["state"] = "declined"

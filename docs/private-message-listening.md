@@ -25,7 +25,8 @@ describes what now runs.
 - **Two more user scopes than the design listed:** `chat:write` (the approval
   prompt and the "is listening" notice have to be posted *as* an authorizing
   user — an app can't post into a group DM) and `mpim:read` (member lists).
-  Still group DMs only; still no way to reach a 1:1 DM or a channel.
+  Still group DMs only; still no way to reach a 1:1 DM or a channel. A third,
+  `reactions:read`, was avoided by reading approvals off the prompt message.
 - **Asking is triggered by activity, not by discovery** (see below). This is
   the one change the design got outright wrong, and it was found by running
   it against a real account.
@@ -118,7 +119,11 @@ app, so approval is expressed as **reactions**, which the bridge can read.
    > useful? React ✅ to approve — two approvals needed, including one
    > authorized member. React ❌ to decline.
 
-2. The bridge polls that message's reactions. **Approved** when two distinct
+2. The bridge polls that message's reactions — by re-fetching the message
+   itself (`conversations.history` with `oldest == latest == ts`), since a
+   message carries its own reactions. `reactions.get` would be the obvious
+   call and needs a `reactions:read` scope on everyone's token; a scope we can
+   do without is a scope we don't ask for. **Approved** when two distinct
    people have reacted ✅ and at least one is an authorizing user. Any ❌ marks
    it declined, and it isn't asked again.
 3. Approvals are stored per conversation: who approved, when, and the message
