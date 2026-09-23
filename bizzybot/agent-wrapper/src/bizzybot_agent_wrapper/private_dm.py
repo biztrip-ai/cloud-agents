@@ -18,19 +18,26 @@ Every cycle (default 2 minutes) the listener:
 
 1. Fetches the current grants from Central-Dispatch, so a dashboard change
    takes effect without a restart.
-2. Discovers group DMs each authorizing user is in (metadata only).
-3. Watches unregistered ones for *activity*, and asks for approval only when
-   somebody says something new in one. A real account is in hundreds of group
-   DMs, nearly all of them years dormant; asking all of them on discovery
-   would post into every one of them. The first time a conversation is seen,
-   its latest timestamp is recorded as a baseline and nothing is posted —
-   only a message after that is a reason to ask.
+2. Asks Slack which group DMs have said anything since last time — one call
+   per authorizing user, no matter how many conversations they are in.
+3. Asks those, and only those, for approval.
 4. Polls an asked conversation's reactions, and reads what's new in approved
    ones, handing each batch over as one silent turn.
 
-The activity check reads one message's **timestamp** and nothing else: the
-text is never looked at, never stored and never handed to the agent. Content
-still requires approval.
+**The tracking list starts empty and only grows when a conversation speaks.**
+An account accumulates hundreds of group DMs, nearly all dormant for years;
+tracking them all would mean a Slack call per conversation per sweep and, in
+the first version of this, an approval request posted into every one of them.
+Slack's conversation listing carries `updated`, which for a group DM is its
+last message, so a single call says which ones are live. A conversation that
+has not spoken since we started is never stored, never called and never
+posted into.
+
+Before anyone is asked, the bump is confirmed against the conversation's last
+message timestamp: Slack also bumps `updated` about a month after a
+conversation goes quiet, and that is housekeeping, not somebody talking. That
+check reads one **timestamp** and nothing else — the text is never looked at,
+stored, or handed to the agent. Content still requires approval.
 
 Configuration (agent.env):
 
@@ -62,6 +69,11 @@ log = logging.getLogger("agent-wrapper.private-dm")
 
 APPROVE = "white_check_mark"
 DECLINE = "x"
+
+# How far `updated` may run ahead of the last message before we read the bump
+# as Slack's housekeeping rather than somebody talking. The real gap is about
+# 30 days; a few minutes is slack enough for clock skew.
+STALE_BUMP_S = 300
 
 # Approval needs this many ✅ from distinct people, one of whom must have
 # authorized the agent (otherwise two bystanders could opt a conversation in).
@@ -120,9 +132,16 @@ class PrivateDMListener:
         self._members_every = (
             members_every if members_every is not None else _int_env("PRIVATE_DM_MEMBERS_EVERY", 5)
         )
-        # conversation id -> {state, members, prompt_ts, prompt_user, last_ts,
-        #                     approvals, asked_at}
+        # Only conversations we have engaged with: asked, approved or declined.
+        # A group DM nobody has spoken in since we started is not in here.
+        # id -> {state, members, prompt_ts, prompt_user, last_ts, approvals}
         self._convos: dict[str, dict[str, Any]] = {}
+        # The last `updated` we saw across all of them: our "anything new?" mark.
+        self._watermark: Optional[float] = None
+        # Conversations that have spoken and are waiting to be asked.
+        self._queue: list[str] = []
+        self._found_by: dict[str, str] = {}
+        self._queued_updated: dict[str, float] = {}
         self._clients: dict[str, AsyncWebClient] = {}  # slack user id -> their client
         self._cursor = 0  # round-robin position when the budget runs out
         self._cycle = 0
@@ -140,8 +159,24 @@ class PrivateDMListener:
             data = json.loads(self._state_path.read_text())
             convos = data.get("conversations")
             if isinstance(convos, dict):
-                self._convos = convos
-                log.info("private DM state: %d conversation(s)", len(self._convos))
+                # Older builds tracked every group DM that existed. Keep only
+                # the ones actually engaged with — asked, approved or declined
+                # — and let the watermark find the rest if they ever speak.
+                self._convos = {
+                    k: v
+                    for k, v in convos.items()
+                    if v.get("prompt_ts") or v.get("state") in ("approved", "declined")
+                }
+                dropped = len(convos) - len(self._convos)
+                if dropped:
+                    log.info("private DM: dropped %d untouched conversation(s)", dropped)
+            self._watermark = data.get("watermark")
+            self._queue = [c for c in (data.get("queue") or []) if c not in self._convos]
+            self._found_by = data.get("found_by") or {}
+            self._queued_updated = data.get("queued_updated") or {}
+            log.info(
+                "private DM state: %d tracked, %d queued", len(self._convos), len(self._queue)
+            )
         except Exception:  # noqa: BLE001 — corrupt state just starts over
             log.warning("could not read %s; starting fresh", self._state_path, exc_info=True)
 
@@ -151,7 +186,20 @@ class PrivateDMListener:
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._state_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"conversations": self._convos}, indent=1))
+            tmp.write_text(
+                json.dumps(
+                    {
+                        "watermark": self._watermark,
+                        "conversations": self._convos,
+                        "queue": self._queue,
+                        "found_by": {k: v for k, v in self._found_by.items() if k in self._queue},
+                        "queued_updated": {
+                            k: v for k, v in self._queued_updated.items() if k in self._queue
+                        },
+                    },
+                    indent=1,
+                )
+            )
             tmp.replace(self._state_path)
         except Exception:  # noqa: BLE001
             log.warning("could not write %s", self._state_path, exc_info=True)
@@ -210,9 +258,23 @@ class PrivateDMListener:
         return bool(fresh)
 
     async def _discover(self, budget: int) -> int:
-        """One `users.conversations` per authorizing user: which group DMs
-        exist. Metadata only — never content."""
+        """One `users.conversations` per authorizing user — the only call a
+        quiet fleet of conversations costs.
+
+        We track nothing until a conversation speaks. Slack's listing carries
+        `updated`, which for a group DM is the timestamp of its last message,
+        so one call tells us which of somebody's hundreds of group DMs have
+        said anything since we last looked. Conversations above that watermark
+        are queued; everything else is not stored, not counted, not called.
+
+        `updated` also gets bumped roughly 30 days after a conversation goes
+        quiet (Slack's own housekeeping), so a queued conversation is confirmed
+        against its actual last message before anyone is asked anything.
+        """
         spent = 0
+        seen = 0
+        newest = self._watermark or 0.0
+        first_pass = self._watermark is None
         for uid, client in list(self._clients.items()):
             if spent >= budget:
                 break
@@ -225,16 +287,51 @@ class PrivateDMListener:
                 self._on_api_error(uid, e, "users.conversations")
                 continue
             for ch in resp.get("channels") or []:
-                cid = ch.get("id")
-                if not cid:
+                seen += 1
+                cid, updated = ch.get("id"), ch.get("updated")
+                if not cid or not updated:
                     continue
-                convo = self._convos.get(cid)
-                if convo is None:
-                    convo = {"state": "pending", "found_by": uid, "members": []}
-                    self._convos[cid] = convo
-                    log.info("private DM: discovered %s (watching for activity)", cid)
-                convo.setdefault("found_by", uid)
+                updated = float(updated) / 1000.0  # ms -> Slack's seconds
+                newest = max(newest, updated)
+                if first_pass:
+                    continue  # set the watermark, disturb nobody
+                if updated <= self._watermark or cid in self._convos or cid in self._queue:
+                    continue
+                self._queue.append(cid)
+                self._found_by[cid] = uid
+                self._queued_updated[cid] = updated
+                log.info("private DM: %s has new activity", cid)
+        if first_pass and seen:
+            log.info(
+                "private DM: watermark set; %d conversation(s) exist and none are "
+                "tracked until one of them speaks",
+                seen,
+            )
+        self._watermark = newest or self._watermark
         return spent
+
+    async def _consider(self, cid: str) -> int:
+        """A conversation that just spoke: confirm it really did, then ask.
+
+        Returns how many calls it cost. The confirmation exists because
+        Slack bumps `updated` on a long-dead conversation about a month after
+        its last message; asking on that would post into a room that has been
+        silent since spring.
+        """
+        uid = self._found_by.get(cid)
+        client = self._clients.get(uid)
+        if not client:
+            return 0
+        convo = {"state": "pending", "found_by": uid, "members": []}
+        ts = await self._latest_ts(cid, convo)
+        bumped_at = self._queued_updated.get(cid) or 0.0
+        if ts is None or bumped_at - float(ts) > STALE_BUMP_S:
+            # Housekeeping, not a message. Leave it untracked.
+            log.info("private DM: %s was bumped but said nothing; ignoring", cid)
+            return 1
+        self._convos[cid] = convo
+        await self._ask(cid, convo)
+        return 2
 
     def _on_api_error(self, uid: str, e: SlackApiError, method: str) -> None:
         data = (e.response.data or {}) if hasattr(e, "response") else {}
@@ -312,23 +409,6 @@ class PrivateDMListener:
             return None
         msgs = resp.get("messages") or []
         return msgs[0].get("ts") if msgs else None
-
-    async def _watch_for_activity(self, cid: str, convo: dict[str, Any]) -> None:
-        """Ask for approval, but only once the conversation is alive again."""
-        ts = await self._latest_ts(cid, convo)
-        if ts is None:
-            convo.setdefault("seen_ts", "0")  # empty conversation: nothing to wait for
-            return
-        baseline = convo.get("seen_ts")
-        if baseline is None:
-            # First sighting: remember where it stands and stay quiet. An old
-            # conversation that never speaks again is never asked.
-            convo["seen_ts"] = ts
-            return
-        if float(ts) <= float(baseline):
-            return
-        convo["seen_ts"] = ts
-        await self._ask(cid, convo)
 
     async def _ask(self, cid: str, convo: dict[str, Any]) -> None:
         picked = self._client_for(convo)
@@ -432,8 +512,17 @@ class PrivateDMListener:
         budget = self._budget
         budget -= await self._discover(budget)
 
-        # Round-robin from where the last cycle stopped, so a long list of
-        # conversations doesn't starve the tail when the budget is tight.
+        # Conversations that have just spoken: confirm and ask, oldest first.
+        while self._queue and budget > 0:
+            cid = self._queue[0]
+            budget -= await self._consider(cid)
+            self._queue.pop(0)
+            self._found_by.pop(cid, None)
+            self._queued_updated.pop(cid, None)
+
+        # Then the ones we already track: poll an unanswered ask, or read what
+        # is new in an approved conversation. Round-robin from where the last
+        # cycle stopped, so a tight budget doesn't starve the tail.
         ids = [c for c in self._convos if self._convos[c].get("state") != "declined"]
         if not ids:
             self._save()
@@ -453,10 +542,7 @@ class PrivateDMListener:
             if budget <= 0:
                 break
             state = convo.get("state")
-            if state == "pending" and not convo.get("prompt_ts"):
-                budget -= 1
-                await self._watch_for_activity(cid, convo)
-            elif state == "pending":
+            if state == "pending":
                 budget -= 1
                 await self._check_approval(cid, convo)
             elif state == "approved":
