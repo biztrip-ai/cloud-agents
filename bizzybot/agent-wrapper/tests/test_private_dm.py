@@ -14,7 +14,7 @@ import pytest
 from slack_sdk.errors import SlackApiError
 
 from bizzybot_agent_wrapper import private_dm
-from bizzybot_agent_wrapper.private_dm import APPROVE, DECLINE, PrivateDMListener
+from bizzybot_agent_wrapper.private_dm import APPROVE, DECLINE, THUMBS_UP, PrivateDMListener
 
 SCOTT = "U_scott"
 DANA = "U_dana"
@@ -181,9 +181,8 @@ def build(world, grant_users=(SCOTT,), tmp_path=None, **kw):
         FakeBot(),
         fetch_grants,
         on_batch,
-        agent_label="BizzyBrain",
         state_path=(tmp_path / "private_dms.json") if tmp_path else None,
-        **{"members_every": 1, **kw},
+        **{"members_every": 1, "agent_label": "BizzyBrain", **kw},
     )
     # The real thing builds an AsyncWebClient per token; swap in fakes.
     private_dm.AsyncWebClient = lambda token: FakeUserClient(  # noqa: E731
@@ -267,7 +266,8 @@ def test_it_asks_before_it_reads():
     assert len(world.posted) == 1
     channel, who, text = world.posted[0]
     assert channel == CONVO and who == SCOTT, "the prompt is posted as an authorizing user"
-    assert "BizzyBrain" in text and APPROVE in text and DECLINE in text
+    assert "BizzyBrain" in text and APPROVE in text and THUMBS_UP in text
+    assert "(@" not in text, "the prompt names the agent, not its handle"
     assert batches == [], "nothing is read before approval"
 
     # One ✅ is not enough.
@@ -285,6 +285,40 @@ def test_it_asks_before_it_reads():
 
     # The authorizing user joins in: approved.
     world.react(APPROVE, SCOTT)
+    run(listener.cycle())
+    assert listener._convos[CONVO]["state"] == "approved"
+
+
+def test_the_prompt_uses_the_display_name_not_the_handle():
+    world = World()
+    listener, _ = build(world, agent_label="BizzyBrain (@bizzybrain)")
+    run(listener.cycle())
+    world.say(DANA, "hello")
+    run(listener.cycle())
+    _, _, text = world.posted[0]
+    assert text == "_(Allow BizzyBrain to listen in this channel. Two :white_check_mark:/:+1: required to approve)_"
+
+
+def test_a_thumbs_up_counts_as_an_approval():
+    world = World()
+    listener, batches = build(world, grant_users=(SCOTT,))
+    run(listener.cycle())  # watermark
+    world.say(DANA, "hello")
+    run(listener.cycle())  # asks
+    world.react(THUMBS_UP, DANA)
+    world.react(APPROVE, SCOTT)  # one of each, one skin-toned below
+    run(listener.cycle())
+    assert listener._convos[CONVO]["state"] == "approved"
+
+
+def test_a_skin_toned_thumbs_up_still_counts():
+    world = World()
+    listener, batches = build(world, grant_users=(SCOTT,))
+    run(listener.cycle())
+    world.say(DANA, "hello")
+    run(listener.cycle())
+    world.react("+1::skin-tone-3", SCOTT)
+    world.react("+1::skin-tone-5", DANA)
     run(listener.cycle())
     assert listener._convos[CONVO]["state"] == "approved"
 

@@ -65,6 +65,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Optional
@@ -77,6 +78,8 @@ from .slack_io import user_label
 log = logging.getLogger("agent-wrapper.private-dm")
 
 APPROVE = "white_check_mark"
+THUMBS_UP = "+1"
+APPROVE_NAMES = frozenset({APPROVE, THUMBS_UP})  # either counts
 DECLINE = "x"
 
 # Approval needs this many ✅ from distinct people, one of whom must have
@@ -128,7 +131,8 @@ class PrivateDMListener:
         self._bot = bot  # bot token: only for resolving user ids to names
         self._fetch_grants = fetch_grants
         self._on_batch = on_batch
-        self._label = agent_label
+        # "BizzyBrain (@bizzybrain)" -> "BizzyBrain": the prompt is one short line.
+        self._label = re.sub(r"\s*\(@[^)]*\)\s*$", "", agent_label) or agent_label
         self._state_path = state_path
         self._interval = interval_s if interval_s is not None else _float_env("PRIVATE_DM_POLL_S", 120)
         self._budget = call_budget if call_budget is not None else _int_env("PRIVATE_DM_CALL_BUDGET", 20)
@@ -493,10 +497,12 @@ class PrivateDMListener:
         picked = self._client_for(convo)
         if not picked:
             return
+        # One quiet italic line in parentheses: it is posted as a person into
+        # their own conversation, and it should read like an aside, not a
+        # banner.
         text = (
-            f"Allow *{self._label}* to listen to this conversation and remember what's "
-            f"useful? React :{APPROVE}: to approve — two approvals needed, including one "
-            f"authorized member. React :{DECLINE}: to decline. Nothing is read until then."
+            f"_(Allow {self._label} to listen in this channel. "
+            f"Two :{APPROVE}:/:{THUMBS_UP}: required to approve)_"
         )
         ts = await self._post(cid, convo, text)
         if ts:
@@ -532,12 +538,19 @@ class PrivateDMListener:
         # Slack truncates a long `users` list, so treat it as a lower bound: an
         # approval needs an authorizing user we can actually see in it.
         reactions = (msgs[0].get("reactions") if msgs else None) or []
-        by_name = {r.get("name"): set(r.get("users") or []) for r in reactions}
+        # A skin-toned thumbs up arrives as "+1::skin-tone-3"; the base name is
+        # what we match on.
+        by_name: dict[str, set[str]] = {}
+        for r in reactions:
+            base = (r.get("name") or "").split("::", 1)[0]
+            by_name.setdefault(base, set()).update(r.get("users") or [])
         if by_name.get(DECLINE):
             convo["state"] = "declined"
             log.info("private DM: %s declined", cid)
             return
-        approvers = by_name.get(APPROVE) or set()
+        approvers: set[str] = set()
+        for name in APPROVE_NAMES:
+            approvers |= by_name.get(name, set())
         authorized = approvers & set(self._clients)
         if len(approvers) >= APPROVALS_NEEDED and authorized:
             convo["state"] = "approved"
