@@ -294,11 +294,17 @@ class PrivateDMListener:
             )
 
         now = time.time()
-        hot = [c for c in owner if now - self._seen_ts.get(c, 0.0) < self._hot_s]
-        cold = [c for c in owner if c not in set(hot)]
-        order = sorted(hot, key=lambda c: self._checked.get(c, 0.0)) + sorted(
-            cold, key=lambda c: self._checked.get(c, 0.0)
-        )
+        # Conversations we have never looked at come first: until we have seen
+        # one, it could be hiding a message from this morning, while one we
+        # checked a minute ago could at worst be hiding a message from a minute
+        # ago. After that, recently-active conversations, which are the ones
+        # likely to move, then everything else — each group oldest-check first.
+        unseen = [c for c in owner if c not in self._seen_ts]
+        seen = [c for c in owner if c in self._seen_ts]
+        hot = [c for c in seen if now - self._seen_ts[c] < self._hot_s]
+        cold = [c for c in seen if now - self._seen_ts[c] >= self._hot_s]
+        by_check = lambda group: sorted(group, key=lambda c: self._checked.get(c, 0.0))
+        order = by_check(unseen) + by_check(hot) + by_check(cold)
         checked = 0
         for cid in order:
             if spent >= budget:
