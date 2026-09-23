@@ -26,6 +26,9 @@ describes what now runs.
   prompt and the "is listening" notice have to be posted *as* an authorizing
   user — an app can't post into a group DM) and `mpim:read` (member lists).
   Still group DMs only; still no way to reach a 1:1 DM or a channel.
+- **Asking is triggered by activity, not by discovery** (see below). This is
+  the one change the design got outright wrong, and it was found by running
+  it against a real account.
 - **Recording starts at the approval prompt**, never before it: the history
   read is anchored to the prompt's timestamp, so what was said before anyone
   was asked stays unread.
@@ -81,6 +84,15 @@ readable if *any* authorizing user is in it.
 Every 2 minutes, for each authorizing user: `users.conversations`, `types=mpim`.
 For each group DM the bridge records id, member ids and last activity.
 
+**Discovery is not a reason to ask.** A real account is in hundreds of group
+DMs and nearly all of them are years dormant; asking on discovery posts a
+message into every one of them (we did this once — 181 conversations, 19 of
+them asked before it was stopped). The first time a conversation is seen its
+latest timestamp is recorded as a baseline and nothing is posted. Only a
+message *after* that baseline is a reason to ask, so a conversation nobody is
+using is never touched. The check reads one message's timestamp and nothing
+else — the text is never looked at, stored or handed to the agent.
+
 **Content is gated in the bridge, not by instruction.** The read tool takes a
 conversation id and checks the allowlist:
 
@@ -99,8 +111,8 @@ Every read is logged (which conversation, which token, how many messages), so
 A Block Kit button posted with a *user* token can't deliver clicks back to the
 app, so approval is expressed as **reactions**, which the bridge can read.
 
-1. On discovering an unapproved group DM, the bridge posts, with the
-   authorizing user's token:
+1. When somebody says something new in an unregistered group DM — not merely
+   on discovering it — the bridge posts, with the authorizing user's token:
 
    > Allow **<agent>** to listen to this conversation and remember what's
    > useful? React ✅ to approve — two approvals needed, including one

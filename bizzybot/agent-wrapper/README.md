@@ -265,6 +265,9 @@ this reads with a *user* token that somebody in the conversation granted on the
 Central-Dispatch dashboard. It is off unless the agent has private messages
 enabled there, and then a conversation is still read only after its
 participants approve it — two ✅, at least one from an authorizing user. The
+ask itself waits for activity: a conversation is asked when somebody says
+something new in it, never merely because it exists, so the hundreds of
+dormant group DMs an account accumulates are left alone. The
 token is asked for with `mpim:history` and no other history scope, so it cannot
 reach 1:1 DMs, public channels or private channels; and the agent never holds
 it. See `docs/private-message-listening.md`.
