@@ -1,0 +1,418 @@
+"""Group-DM listening: read conversations the bot cannot be a member of.
+
+An app can't be added to a group DM, so the agent reads one with a **user
+token** granted by somebody in it (Central-Dispatch holds the grants; see
+`docs/private-message-listening.md`). That token could reach everything its
+owner can see, so almost all of this module is about narrowing that down:
+
+- The token is asked for with `mpim:history` and no other history scope, so it
+  **cannot** read 1:1 DMs, public channels or private channels. Not a policy —
+  Slack won't serve them.
+- A conversation is read only after its participants approve it in the
+  conversation itself: two ✅, at least one from an authorizing user.
+- The agent never sees the token. It only ever receives text this module hands
+  it, from approved conversations. An agent that decides to go read something
+  has nothing to read it with.
+
+Every cycle (default 2 minutes) the listener:
+
+1. Fetches the current grants from Central-Dispatch, so a dashboard change
+   takes effect without a restart.
+2. Discovers group DMs each authorizing user is in (metadata only).
+3. Asks unapproved ones for approval, and polls the prompt's reactions.
+4. Reads what's new in approved ones and hands it over as one silent turn.
+
+Configuration (agent.env):
+
+    PRIVATE_DM_POLL_S=120         seconds between cycles
+    PRIVATE_DM_CALL_BUDGET=20     max Slack calls per cycle (round-robin above it)
+    PRIVATE_DM_MAX_MESSAGES=50    messages per batch handed to the agent
+    PRIVATE_DM_MEMBERS_EVERY=5    re-check membership every Nth cycle
+
+Off unless Central-Dispatch says the agent is enabled *and* somebody has
+authorized it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Iterable, Optional
+
+from slack_sdk.errors import SlackApiError
+from slack_sdk.web.async_client import AsyncWebClient
+
+from .slack_io import user_label
+
+log = logging.getLogger("agent-wrapper.private-dm")
+
+APPROVE = "white_check_mark"
+DECLINE = "x"
+
+# Approval needs this many ✅ from distinct people, one of whom must have
+# authorized the agent (otherwise two bystanders could opt a conversation in).
+APPROVALS_NEEDED = 2
+
+# Subtypes that aren't somebody saying something.
+_SKIP_SUBTYPES = {
+    "message_changed",
+    "message_deleted",
+    "group_join",
+    "group_leave",
+    "channel_join",
+    "channel_leave",
+    "bot_message",
+}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+class PrivateDMListener:
+    """Discovery, approval and recording for group DMs, on one timer."""
+
+    def __init__(
+        self,
+        bot: AsyncWebClient,
+        fetch_grants: Callable[[], Awaitable[list[dict[str, Any]]]],
+        on_batch: Callable[[str, str], Awaitable[None]],
+        *,
+        agent_label: str = "the agent",
+        state_path: Optional[Path] = None,
+        interval_s: Optional[float] = None,
+        call_budget: Optional[int] = None,
+        max_messages: Optional[int] = None,
+        members_every: Optional[int] = None,
+    ) -> None:
+        self._bot = bot  # bot token: only for resolving user ids to names
+        self._fetch_grants = fetch_grants
+        self._on_batch = on_batch
+        self._label = agent_label
+        self._state_path = state_path
+        self._interval = interval_s if interval_s is not None else _float_env("PRIVATE_DM_POLL_S", 120)
+        self._budget = call_budget if call_budget is not None else _int_env("PRIVATE_DM_CALL_BUDGET", 20)
+        self._max = max_messages if max_messages is not None else _int_env("PRIVATE_DM_MAX_MESSAGES", 50)
+        self._members_every = (
+            members_every if members_every is not None else _int_env("PRIVATE_DM_MEMBERS_EVERY", 5)
+        )
+        # conversation id -> {state, members, prompt_ts, prompt_user, last_ts,
+        #                     approvals, asked_at}
+        self._convos: dict[str, dict[str, Any]] = {}
+        self._clients: dict[str, AsyncWebClient] = {}  # slack user id -> their client
+        self._cursor = 0  # round-robin position when the budget runs out
+        self._cycle = 0
+        self._task: Optional[asyncio.Task] = None
+        self._load()
+
+    # --- persistence --------------------------------------------------------
+    # Approvals and read cursors outlive restarts: losing them would re-ask
+    # every conversation, and re-read from the beginning.
+
+    def _load(self) -> None:
+        if not self._state_path or not self._state_path.exists():
+            return
+        try:
+            data = json.loads(self._state_path.read_text())
+            convos = data.get("conversations")
+            if isinstance(convos, dict):
+                self._convos = convos
+                log.info("private DM state: %d conversation(s)", len(self._convos))
+        except Exception:  # noqa: BLE001 — corrupt state just starts over
+            log.warning("could not read %s; starting fresh", self._state_path, exc_info=True)
+
+    def _save(self) -> None:
+        if not self._state_path:
+            return
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"conversations": self._convos}, indent=1))
+            tmp.replace(self._state_path)
+        except Exception:  # noqa: BLE001
+            log.warning("could not write %s", self._state_path, exc_info=True)
+
+    # --- helpers ------------------------------------------------------------
+
+    def _authorizers_in(self, convo: dict[str, Any]) -> list[str]:
+        """Authorizing users who are in this conversation — whose tokens may
+        read it. Empty means nobody with a grant is in the room any more, and
+        reading stops."""
+        members = set(convo.get("members") or [])
+        # Before the first membership fetch we only know who discovered it.
+        if not members:
+            found_by = convo.get("found_by")
+            return [found_by] if found_by in self._clients else []
+        return [u for u in self._clients if u in members]
+
+    def _client_for(self, convo: dict[str, Any]) -> Optional[tuple[str, AsyncWebClient]]:
+        for user in self._authorizers_in(convo):
+            client = self._clients.get(user)
+            if client:
+                return user, client
+        return None
+
+    async def _names(self, ids: Iterable[str]) -> dict[str, str]:
+        out = {}
+        for uid in ids:
+            out[uid] = await user_label(self._bot, uid) or uid
+        return out
+
+    # --- the cycle ----------------------------------------------------------
+
+    async def _refresh_grants(self) -> bool:
+        """Rebuild the per-user clients from Central-Dispatch. Returns False
+        when there is nothing to do this cycle."""
+        try:
+            grants = await self._fetch_grants()
+        except Exception:  # noqa: BLE001 — Central-Dispatch hiccup: keep what we have
+            log.warning("could not fetch private-message grants", exc_info=True)
+            return bool(self._clients)
+        fresh: dict[str, AsyncWebClient] = {}
+        for g in grants or []:
+            uid, token = g.get("slackUserId"), g.get("token")
+            if not uid or not token:
+                continue
+            existing = self._clients.get(uid)
+            # Reuse the client unless the token changed (re-authorization).
+            fresh[uid] = existing if existing and existing.token == token else AsyncWebClient(token=token)
+        gone = set(self._clients) - set(fresh)
+        if gone:
+            log.info("private DM: %d authorization(s) removed", len(gone))
+        added = set(fresh) - set(self._clients)
+        if added:
+            log.info("private DM: %d new authorization(s)", len(added))
+        self._clients = fresh
+        return bool(fresh)
+
+    async def _discover(self, budget: int) -> int:
+        """One `users.conversations` per authorizing user: which group DMs
+        exist. Metadata only — never content."""
+        spent = 0
+        for uid, client in list(self._clients.items()):
+            if spent >= budget:
+                break
+            spent += 1
+            try:
+                resp = await client.users_conversations(
+                    types="mpim", exclude_archived=True, limit=200
+                )
+            except SlackApiError as e:
+                self._on_api_error(uid, e)
+                continue
+            for ch in resp.get("channels") or []:
+                cid = ch.get("id")
+                if not cid:
+                    continue
+                convo = self._convos.get(cid)
+                if convo is None:
+                    convo = {"state": "pending", "found_by": uid, "members": []}
+                    self._convos[cid] = convo
+                    log.info("private DM: discovered %s (pending approval)", cid)
+                convo.setdefault("found_by", uid)
+        return spent
+
+    def _on_api_error(self, uid: str, e: SlackApiError) -> None:
+        code = (e.response.data or {}).get("error") if hasattr(e, "response") else None
+        if code in ("invalid_auth", "token_revoked", "account_inactive"):
+            # The grant is gone on Slack's side; drop it until Central-Dispatch
+            # agrees (it will, on the next fetch, once the dashboard catches up).
+            log.warning("private DM: token for %s is no longer valid", uid)
+            self._clients.pop(uid, None)
+        else:
+            log.warning("private DM: Slack error for %s: %s", uid, code or e)
+
+    async def _refresh_members(self, cid: str, convo: dict[str, Any]) -> None:
+        """Who is in the conversation. A new face gets a visible notice — a
+        person who joins shouldn't be recorded without knowing."""
+        picked = self._client_for(convo)
+        if not picked:
+            return
+        uid, client = picked
+        try:
+            resp = await client.conversations_members(channel=cid, limit=100)
+        except SlackApiError as e:
+            self._on_api_error(uid, e)
+            return
+        members = [m for m in (resp.get("members") or []) if m]
+        if not members:
+            return
+        known = set(convo.get("members") or [])
+        convo["members"] = members
+        new = [m for m in members if m not in known]
+        if known and new and convo.get("state") == "approved":
+            await self._post(cid, convo, f"_{self._label} is listening_")
+
+    async def _post(self, cid: str, convo: dict[str, Any], text: str) -> Optional[str]:
+        """Post as an authorizing user — the only way to write into a group DM
+        the app isn't in."""
+        picked = self._client_for(convo)
+        if not picked:
+            return None
+        uid, client = picked
+        try:
+            resp = await client.chat_postMessage(channel=cid, text=text)
+            return resp.get("ts")
+        except SlackApiError as e:
+            self._on_api_error(uid, e)
+            return None
+
+    async def _ask(self, cid: str, convo: dict[str, Any]) -> None:
+        picked = self._client_for(convo)
+        if not picked:
+            return
+        text = (
+            f"Allow *{self._label}* to listen to this conversation and remember what's "
+            f"useful? React :{APPROVE}: to approve — two approvals needed, including one "
+            f"authorized member. React :{DECLINE}: to decline. Nothing is read until then."
+        )
+        ts = await self._post(cid, convo, text)
+        if ts:
+            convo["prompt_ts"] = ts
+            convo["prompt_user"] = picked[0]
+            convo["asked_at"] = time.time()
+            log.info("private DM: asked %s for approval", cid)
+
+    async def _check_approval(self, cid: str, convo: dict[str, Any]) -> None:
+        picked = self._client_for(convo)
+        if not picked:
+            return
+        uid, client = picked
+        try:
+            resp = await client.reactions_get(channel=cid, timestamp=convo["prompt_ts"], full=True)
+        except SlackApiError as e:
+            self._on_api_error(uid, e)
+            return
+        reactions = ((resp.get("message") or {}).get("reactions")) or []
+        by_name = {r.get("name"): set(r.get("users") or []) for r in reactions}
+        if by_name.get(DECLINE):
+            convo["state"] = "declined"
+            log.info("private DM: %s declined", cid)
+            return
+        approvers = by_name.get(APPROVE) or set()
+        authorized = approvers & set(self._clients)
+        if len(approvers) >= APPROVALS_NEEDED and authorized:
+            convo["state"] = "approved"
+            convo["approvals"] = sorted(approvers)
+            # Record from the approval forward, never backwards: messages sent
+            # before anyone was asked were sent in private.
+            convo["last_ts"] = convo.get("prompt_ts")
+            log.info("private DM: %s approved by %d participant(s)", cid, len(approvers))
+
+    async def _record(self, cid: str, convo: dict[str, Any]) -> None:
+        picked = self._client_for(convo)
+        if not picked:
+            return
+        uid, client = picked
+        try:
+            resp = await client.conversations_history(
+                channel=cid, oldest=convo.get("last_ts") or "0", limit=self._max, inclusive=False
+            )
+        except SlackApiError as e:
+            self._on_api_error(uid, e)
+            return
+        msgs = [
+            m
+            for m in reversed(resp.get("messages") or [])
+            if m.get("subtype") not in _SKIP_SUBTYPES
+            and (m.get("text") or "").strip()
+            and m.get("ts") != convo.get("prompt_ts")
+            and not m.get("bot_id")
+        ]
+        newest = max((m.get("ts") or "0" for m in resp.get("messages") or []), default=None)
+        if not msgs:
+            if newest:
+                convo["last_ts"] = newest
+            return
+        names = await self._names({m.get("user") for m in msgs if m.get("user")})
+        body = "\n".join(f"{names.get(m.get('user'), m.get('user') or '?')}: {m['text']}" for m in msgs)
+        who = ", ".join(sorted(names.values()))
+        log.info("private DM batch %s: %d message(s) (read as %s)", cid, len(msgs), uid)
+        await self._on_batch(
+            cid,
+            f"[Private group DM — nobody addressed you. This conversation's participants "
+            f"approved recording. Participants: {who}. Read these messages, keep anything "
+            f"worth remembering that the rules allow, and reply with nothing.]\n\n{body}",
+        )
+        # Only after the turn completed: a crash re-reads rather than skipping.
+        convo["last_ts"] = msgs[-1]["ts"]
+
+    async def cycle(self) -> None:
+        """One pass. Separate from the loop so tests can drive it directly."""
+        self._cycle += 1
+        if not await self._refresh_grants():
+            return
+        budget = self._budget
+        budget -= await self._discover(budget)
+
+        # Round-robin from where the last cycle stopped, so a long list of
+        # conversations doesn't starve the tail when the budget is tight.
+        ids = [c for c in self._convos if self._convos[c].get("state") != "declined"]
+        if not ids:
+            self._save()
+            return
+        start = self._cursor % len(ids)
+        order = ids[start:] + ids[:start]
+        done = 0
+        for cid in order:
+            if budget <= 0:
+                break
+            convo = self._convos[cid]
+            if not self._authorizers_in(convo):
+                continue  # nobody with a grant is in the room
+            if self._members_every and self._cycle % self._members_every == 0:
+                budget -= 1
+                await self._refresh_members(cid, convo)
+            if budget <= 0:
+                break
+            state = convo.get("state")
+            if state == "pending" and not convo.get("prompt_ts"):
+                budget -= 1
+                await self._ask(cid, convo)
+            elif state == "pending":
+                budget -= 1
+                await self._check_approval(cid, convo)
+            elif state == "approved":
+                budget -= 1
+                await self._record(cid, convo)
+            done += 1
+        self._cursor = (start + done) % len(ids)
+        self._save()
+
+    async def _loop(self) -> None:
+        while True:
+            try:
+                await self.cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — one bad cycle mustn't kill the loop
+                log.exception("private DM cycle failed")
+            await asyncio.sleep(self._interval)
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._loop())
+            log.info(
+                "private DM listening armed (every %.0fs, budget %d calls/cycle)",
+                self._interval,
+                self._budget,
+            )
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            self._task = None

@@ -209,6 +209,44 @@ dispatching a builder agent):
   messages) and `add_reaction`. `add_reaction` needs the `reactions:write`
   scope, so reinstall the app from the dashboard to grant it.
 
+## Listening: channels and group DMs
+
+Normally a message only reaches the agent when it @-mentions it. Two opt-in
+modes let an agent *follow* a conversation instead. Both hand the agent one
+**silent turn** per batch — a turn that renders nothing in Slack and is only
+visible in the log — so a followed conversation costs one turn every couple of
+minutes, not one per message.
+
+**Named channels** (`passive.py`). Someone invites the agent to the channel,
+public or private; that invite is the consent, and it shows in the member list.
+Reading uses the bot token and the events Central-Dispatch already fans out, so
+there are no extra API calls.
+
+| Setting | What |
+|---|---|
+| `PASSIVE_LISTEN_CHANNELS` | channel ids or `#names` to follow |
+| `PASSIVE_LISTEN_ALL=1` | follow every channel the agent is in |
+| `PASSIVE_FLUSH_S` | how long a batch may wait (default 120) |
+| `PASSIVE_MAX_MESSAGES` | flush early at this many (default 50) |
+
+With neither channel setting, passive listening is off.
+
+**Group DMs** (`private_dm.py`). An app can't be a member of a group DM, so
+this reads with a *user* token that somebody in the conversation granted on the
+Central-Dispatch dashboard. It is off unless the agent has private messages
+enabled there, and then a conversation is still read only after its
+participants approve it — two ✅, at least one from an authorizing user. The
+token is asked for with `mpim:history` and no other history scope, so it cannot
+reach 1:1 DMs, public channels or private channels; and the agent never holds
+it. See `docs/private-message-listening.md`.
+
+| Setting | What |
+|---|---|
+| `PRIVATE_DM_POLL_S` | seconds between cycles (default 120) |
+| `PRIVATE_DM_CALL_BUDGET` | Slack calls per cycle before round-robining (default 20) |
+| `PRIVATE_DM_MAX_MESSAGES` | messages per batch (default 50) |
+| `PRIVATE_DM_MEMBERS_EVERY` | re-check membership every Nth cycle (default 5) |
+
 ## Receiving secrets: `bizzybot-dropbox`
 
 To get a token, key or env var value onto an agent box without pasting it into
@@ -251,6 +289,8 @@ Kept in `~/.bizzybot/` (override with `BIZZYBOT_STATE_DIR`):
 - `sessions.json` — per-thread Claude session ids (for resume across restarts).
 - `settings.env` — your agent settings (see above). Hand-edited, not written by
   the agent-wrapper.
+- `private_dms.json` — group-DM listening: which conversations are approved,
+  declined or still being asked, and how far each has been read. No tokens.
 - `logs/` — one log file per run (see below). May hold sensitive text; kept `0700`.
 
 ## Logs

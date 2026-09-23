@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 import ssl
@@ -38,12 +39,22 @@ import aiohttp
 from dotenv import load_dotenv
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import email_reply, pr_poller, sentry_poller, shell_exec, slack_tools, support_hook
+from . import (
+    email_reply,
+    passive,
+    pr_poller,
+    private_dm,
+    sentry_poller,
+    shell_exec,
+    slack_tools,
+    support_hook,
+)
 from .paths import log_path, state_path
 from .session_manager import SessionManager, load_cli_mcp_servers
 from .settings import claude_env, load_settings, resolve
 from .slack_io import (
     ATTACH_RE,
+    SilentRenderer,
     SlackRenderer,
     download_slack_files,
     sender_line,
@@ -485,6 +496,29 @@ async def bot_owns_channel(
     return owned
 
 
+# Passive-listening sessions are keyed with this prefix so they can be told
+# apart from conversation sessions: they have no thread to post into, and a
+# background flush must not try (see flush_background_results).
+PASSIVE_KEY_PREFIX = "passive::"
+
+
+def passive_session_key(channel: str) -> str:
+    """One conversation per passively-listened channel, kept apart from any
+    thread session in the same channel."""
+    return f"{PASSIVE_KEY_PREFIX}{channel}"
+
+
+# Group-DM sessions are silent for the same reason, and additionally must never
+# post: the bot isn't in the conversation and could only reach it by borrowing
+# somebody's user token, which no turn is allowed to do.
+PRIVATE_DM_KEY_PREFIX = "dm::"
+
+
+def private_dm_session_key(conversation: str) -> str:
+    """One conversation per watched group DM."""
+    return f"{PRIVATE_DM_KEY_PREFIX}{conversation}"
+
+
 def channel_session_key(channel: str) -> str:
     """Session key for the top-level conversation in a channel the bot created.
     Thread sessions are keyed `channel:thread_ts`; this one has no `:`, so
@@ -743,7 +777,13 @@ async def handle_user_message(
     session = await sessions.get_or_create(thread_key)
     # If a turn on this thread is already running, ours will queue behind it on
     # the session lock — tell the user rather than showing a frozen "thinking…".
-    renderer = SlackRenderer(slack, channel, reply_ts, queued=session.is_busy)
+    # A turn nobody asked for (a passive-listening batch) renders nothing:
+    # there is no question on screen waiting for an answer.
+    renderer = (
+        SilentRenderer()
+        if payload.get("silent")
+        else SlackRenderer(slack, channel, reply_ts, queued=session.is_busy)
+    )
     await renderer.open()
     full_text: list[str] = []
     # Whether any of the *thread's* agent's own words reached the message. It
@@ -833,6 +873,10 @@ async def handle_user_message(
         ticker.cancel()
 
     joined = "\n".join(full_text)
+    if payload.get("silent"):
+        # Nothing is posted; log what it said so the batch is auditable.
+        log.info("silent turn %s: %s", thread_key, (joined.strip()[:300] or "(no output)"))
+        return turn_ok
     paths = [m.group(1).strip() for m in ATTACH_RE.finditer(joined)]
     if paths:
         await upload_files(slack, channel, reply_ts, paths)
@@ -928,6 +972,12 @@ async def flush_background_results(
     session = sessions.get(thread_key)
     if session is None:
         return  # cleared/reaped since the hook fired — don't resurrect it
+    if thread_key.startswith((PASSIVE_KEY_PREFIX, PRIVATE_DM_KEY_PREFIX)):
+        # A listening session has no conversation to report into; its turns are
+        # silent by design. Whatever the sub-agent produced is in the log, and
+        # the next batch carries on.
+        log.info("flush: skipping listening session %s (nothing to post into)", thread_key)
+        return
     channel, _, thread_ts = thread_key.partition(":")
     # A channel-level session (see channel_session_key) has no thread: post at
     # top level.
@@ -1277,6 +1327,8 @@ META_COMMANDS: dict[str, tuple[Callable[..., Awaitable[None]], str]] = {
 # Set in main() when SENTRY_ALERT_CHANNEL is configured; consulted before the
 # normal message pipeline, which by design drops all bot-app messages.
 SENTRY_ALERT_HOOK: Optional[sentry_poller.SentryAlertHook] = None
+# Set in main() when passive listening is configured; consulted in dispatch_event.
+PASSIVE_LISTENER: Optional["passive.PassiveListener"] = None
 SUPPORT_INBOX_HOOK: Optional[support_hook.SupportInboxHook] = None
 
 
@@ -1291,6 +1343,13 @@ async def dispatch_event(payload: Any, sessions: SessionManager, slack: AsyncWeb
         return
     if _is_human_message(payload):
         AGENT_CHAIN.human()
+    # Passive listening buffers channel chatter nobody addressed to us. It
+    # declines anything the normal path would handle (a mention, our own words),
+    # so a message is never seen twice.
+    if PASSIVE_LISTENER is not None and await PASSIVE_LISTENER.offer(
+        payload, bot_user_id, _agent_allowlist()
+    ):
+        return
     if isinstance(payload, dict) and payload.get("bot_id"):
         msg = normalize_agent_event(payload, bot_user_id, _agent_allowlist())
         if msg is None:
@@ -1712,6 +1771,75 @@ async def main() -> None:
         else:
             log.info("support inbox hook disabled (set SUPPORT_CHANNEL to enable)")
 
+        # Passive listening: follow channels the agent was invited to, batching
+        # what arrives into one silent turn per channel.
+        global PASSIVE_LISTENER
+
+        async def on_passive_batch(channel: str, text: str) -> None:
+            await handle_user_message(
+                {
+                    "thread_key": passive_session_key(channel),
+                    "channel": channel,
+                    "reply_thread_ts": None,
+                    "text": text,
+                    "silent": True,
+                },
+                sessions,
+                slack,
+            )
+
+        PASSIVE_LISTENER = passive.PassiveListener(slack, on_passive_batch)
+        if PASSIVE_LISTENER.enabled:
+            PASSIVE_LISTENER.start()
+        else:
+            log.info("passive listening disabled (set PASSIVE_LISTEN_CHANNELS or PASSIVE_LISTEN_ALL)")
+
+        # Group-DM listening. Switched on per agent in Central-Dispatch, and
+        # then only for the people who authorize it; the grants are fetched
+        # each cycle so adding or removing one needs no restart.
+        dm_listener: Optional[private_dm.PrivateDMListener] = None
+        if reg.get("privateMessagesEnabled"):
+            async def fetch_grants() -> list[dict[str, Any]]:
+                # ws_token is this agent's registration token (Central-Dispatch
+                # returns it as the WebSocket credential); it authenticates us.
+                async with http.post(
+                    f"{central_dispatch}/api/user-tokens",
+                    json={"token": ws_token},
+                    ssl=_insecure_tls_ctx(central_dispatch),
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+                return data.get("tokens") or []
+
+            async def on_dm_batch(conversation: str, text: str) -> None:
+                await handle_user_message(
+                    {
+                        "thread_key": private_dm_session_key(conversation),
+                        "channel": conversation,
+                        "reply_thread_ts": None,
+                        "text": text,
+                        "silent": True,
+                    },
+                    sessions,
+                    slack,
+                )
+
+            bot_id = await get_bot_user_id(slack)
+            bot_label = (await user_label(slack, bot_id) if bot_id else None) or "this agent"
+            dm_listener = private_dm.PrivateDMListener(
+                slack,
+                fetch_grants,
+                on_dm_batch,
+                agent_label=bot_label,
+                state_path=Path(state_path("private_dms.json")),
+            )
+            dm_listener.start()
+        else:
+            log.info(
+                "group-DM listening off (enable it for this agent on the "
+                "Central-Dispatch dashboard)"
+            )
+
         # Wake threads when a background sub-agent finishes (see the
         # "Background-task flush" section above). thread_key -> the task holding
         # that thread's coalescing window, so a window that closes never clears
@@ -1784,6 +1912,10 @@ async def main() -> None:
                 await poller.stop()
             if sentry_watch is not None:
                 await sentry_watch.stop()
+            if dm_listener is not None:
+                await dm_listener.stop()
+            if PASSIVE_LISTENER is not None:
+                await PASSIVE_LISTENER.stop()
             await sessions.close_all()
 
 

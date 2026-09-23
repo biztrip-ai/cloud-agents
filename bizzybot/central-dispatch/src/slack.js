@@ -27,6 +27,13 @@ export const SLACK_BOT_SCOPES = [
   'reactions:write',
 ];
 
+// User-token scopes for private-message listening. Group DMs and nothing else:
+// without im:history / channels:history / groups:history the token cannot read
+// 1:1 DMs, public channels or private channels — by construction, not policy.
+// chat:write posts the approval prompt and the "is listening" notice as the
+// authorizing user, since an app can't post into a group DM it isn't in.
+export const SLACK_USER_SCOPES = ['mpim:history', 'mpim:read', 'chat:write', 'users:read'];
+
 const MAX_SKEW_S = 60 * 5; // reject requests older than 5 min (replay protection)
 
 // Verify an inbound Slack request signature. The signed base string is
@@ -45,6 +52,18 @@ export function verifySlackSignature({ signingSecret, signature, timestamp, rawB
   const b = Buffer.from(signature);
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+// Ask one person for a *user* token (no bot scopes, so the app's existing
+// install is untouched). oauth.v2.access returns it as authed_user.access_token.
+export function userAuthorizeUrl(state, redirectUri, app = config.slack.primary) {
+  const u = new URL('https://slack.com/oauth/v2/authorize');
+  u.searchParams.set('client_id', app.clientId);
+  u.searchParams.set('scope', '');
+  u.searchParams.set('user_scope', SLACK_USER_SCOPES.join(','));
+  u.searchParams.set('redirect_uri', redirectUri);
+  u.searchParams.set('state', state);
+  return u.toString();
 }
 
 // --- Sign in with Slack (OIDC) ----------------------------------------------
@@ -219,8 +238,9 @@ export function buildManifest({ appName, baseUrl }) {
       redirect_urls: [`${baseUrl}/slack/oauth/callback`, `${baseUrl}/auth/slack/callback`],
       scopes: {
         bot: SLACK_BOT_SCOPES,
-        // Sign in with Slack (dashboard auth).
-        user: ['openid', 'email', 'profile'],
+        // Sign in with Slack (dashboard auth), plus the group-DM listening
+        // scopes an individual may grant later (never requested at install).
+        user: ['openid', 'email', 'profile', ...SLACK_USER_SCOPES],
       },
     },
     settings: {
