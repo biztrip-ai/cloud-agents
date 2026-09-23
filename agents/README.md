@@ -7,7 +7,7 @@ appends to the agent's system prompt (`AGENT_PROMPT_FILE`) and the
 
 | Agent | Folder | Role |
 |---|---|---|
-| **BizzyBrain** (`@bizzybrain`) | `bizzybrain/` | Follows the channels it's invited to, remembers durable non-sensitive facts, and answers questions from that memory. Runs with `PASSIVE_LISTEN_ALL=1`. |
+| **BizzyBrain** (`@bizzybrain`) | `bizzybrain/` | The company brain. Follows the channels it's invited to, reads its own mailbox (`bizzy@biztrip.ai`), shared Google Docs and calendars, and Jira; remembers durable non-sensitive facts in an Obsidian vault (`bizzybrain/MEMORY.md`); answers questions and does tasks on request. Runs with `PASSIVE_LISTEN_ALL=1`. |
 
 Each box clones this repo to `/workspaces/projects/cloud-agents`, so a
 protocol change is a `git pull` plus `sudo systemctl restart agent.service`.
