@@ -25,7 +25,7 @@ vault/
   people/               one note per person BizTrip works with, any group: Freddy Shim.md
   companies/            one note per outside company: customer, prospect, partner, vendor, investor
   projects/             one note per initiative: Investor Deck.md, Sabre Migration.md
-  .obsidian/            Obsidian's own settings, if someone opened the vault; never edit
+  .obsidian/            Obsidian's settings; app.json must keep "alwaysUpdateLinks": true; otherwise never edit
 ```
 
 Rules for the layout:
@@ -40,7 +40,8 @@ Rules for the layout:
   few-word gloss each.
 - **Don't rename or move notes** without a reason. When you must, use
   `obsidian-cli rename` or `move`, which update every `[[link]]` to the
-  note, then check `obsidian-cli unresolved` reports nothing. Never rename
+  note (the vault's `.obsidian/app.json` must have
+  `"alwaysUpdateLinks": true`, or they won't), then check `obsidian-cli unresolved` reports nothing. Never rename
   with `mv`.
 
 ## Note format
@@ -223,7 +224,7 @@ obsidian-cli base:query path=People.base view="Board" format=md
 obsidian-cli base:query path=Companies.base view="Prospects" format=md
 obsidian-cli unresolved                 # dangling [[links]]: should be none
 obsidian-cli orphans                    # notes nothing links to
-obsidian-cli rename path="people/Nik.md" name="Nik Taylor"
+obsidian-cli rename path="people/Jane.md" name="Jane Doe"
 ```
 
 - **Write notes with ordinary file edits**, as above. The CLI is for
@@ -260,6 +261,9 @@ obsidian-cli rename path="people/Nik.md" name="Nik Taylor"
   # Register the vault and enable the CLI (Settings > General > Command line interface).
   mkdir -p ~/.config/obsidian
   echo '{"vaults":{"'$(openssl rand -hex 8)'":{"path":"/workspaces/bizzybrain/vault","ts":'$(date +%s000)',"open":true}},"cli":true}' > ~/.config/obsidian/obsidian.json
+  # Let renames rewrite links (Settings > Files and links > Automatically update internal links).
+  mkdir -p /workspaces/bizzybrain/vault/.obsidian
+  echo '{"alwaysUpdateLinks":true}' > /workspaces/bizzybrain/vault/.obsidian/app.json
   ```
 
   Then add `/etc/systemd/system/obsidian.service` (`User=ubuntu`,
