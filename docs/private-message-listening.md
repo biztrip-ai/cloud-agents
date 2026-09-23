@@ -85,14 +85,25 @@ readable if *any* authorizing user is in it.
 Every 2 minutes, for each authorizing user: `users.conversations`, `types=mpim`.
 For each group DM the bridge records id, member ids and last activity.
 
-**Discovery is not a reason to ask.** A real account is in hundreds of group
-DMs and nearly all of them are years dormant; asking on discovery posts a
-message into every one of them (we did this once — 181 conversations, 19 of
-them asked before it was stopped). The first time a conversation is seen its
-latest timestamp is recorded as a baseline and nothing is posted. Only a
-message *after* that baseline is a reason to ask, so a conversation nobody is
-using is never touched. The check reads one message's timestamp and nothing
-else — the text is never looked at, stored or handed to the agent.
+**The tracking list starts empty and only grows when a conversation speaks.**
+A real account is in hundreds of group DMs — 181 on the first account we tried
+— and nearly all are years dormant. Asking on discovery posts into every one
+of them (we did that once, and stopped it after 19). Tracking them all instead
+is almost as bad: it costs a Slack call per conversation per sweep, which is
+twenty minutes of calls to learn that nothing happened.
+
+Slack's listing already carries what we need. Each conversation has an
+`updated` field which, for a group DM, **is the timestamp of its last
+message** (verified: 0s difference on live conversations). So one
+`users.conversations` call per authorizing user — the call we already make —
+says which of their hundreds of conversations have spoken since the last
+watermark. Everything below the watermark is not stored, not called, and not
+posted into.
+
+One wrinkle: `updated` is also bumped about a month after a conversation goes
+quiet, by Slack's own housekeeping. So a conversation that crosses the
+watermark is confirmed against its actual last message before anybody is
+asked. That check reads one timestamp — never the text.
 
 **Content is gated in the bridge, not by instruction.** The read tool takes a
 conversation id and checks the allowlist:

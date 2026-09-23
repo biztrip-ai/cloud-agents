@@ -44,11 +44,14 @@ class FakeUserClient:
 
     async def users_conversations(self, **kw):
         assert kw.get("types") == "mpim", "group DMs only"
+        # Slack's listing carries `updated` — for a group DM, its last message
+        # in milliseconds. That one field is what drives the whole design.
         chans = [
-            {"id": cid}
+            {"id": cid, "updated": int(float(c["updated"]) * 1000)}
             for cid, c in self.world.convos.items()
             if self.user in c["members"]
         ]
+        self.world.list_calls += 1
         return {"channels": chans}
 
     async def conversations_members(self, channel, **kw):
@@ -56,9 +59,9 @@ class FakeUserClient:
 
     async def chat_postMessage(self, channel, text):
         ts = f"{self.world.next_ts()}"
-        self.world.convos[channel]["messages"].append(
-            {"ts": ts, "user": self.user, "text": text}
-        )
+        c = self.world.convos[channel]
+        c["messages"].append({"ts": ts, "user": self.user, "text": text})
+        c["updated"] = float(ts)
         self.world.posted.append((channel, self.user, text))
         return {"ts": ts}
 
@@ -85,21 +88,30 @@ class FakeUserClient:
 class World:
     def __init__(self, members=(SCOTT, DANA, TOM)):
         self._ts = 100.0
-        self.convos = {
-            CONVO: {"members": list(members), "messages": [], "reactions": {}},
-        }
+        self.convos = {CONVO: self.blank(members)}
         self.posted = []
         self.history_calls = 0
+        self.list_calls = 0
         self.grants = []
+
+    def blank(self, members=(SCOTT, DANA)):
+        # `updated` starts at the conversation's creation, as Slack's does.
+        return {"members": list(members), "messages": [], "reactions": {}, "updated": 1.0}
 
     def next_ts(self):
         self._ts += 1
         return round(self._ts, 6)
 
     def say(self, user, text, convo=CONVO):
-        self.convos[convo]["messages"].append(
-            {"ts": f"{self.next_ts()}", "user": user, "text": text}
-        )
+        ts = self.next_ts()
+        self.convos[convo]["messages"].append({"ts": f"{ts}", "user": user, "text": text})
+        self.convos[convo]["updated"] = ts
+
+    def housekeeping_bump(self, convo=CONVO):
+        """Slack bumps `updated` about a month after a conversation dies."""
+        month = 30 * 86400
+        self._ts += month
+        self.convos[convo]["updated"] = float(self.convos[convo]["messages"][-1]["ts"]) + month
 
     def react(self, name, user, convo=CONVO):
         self.convos[convo]["reactions"].setdefault(name, set()).add(user)
@@ -146,23 +158,48 @@ def test_nothing_happens_without_a_grant():
     assert world.history_calls == 0, "must not read a single message"
 
 
-def test_a_dormant_conversation_is_never_asked():
+def test_a_dormant_conversation_is_never_tracked():
     world = World()
     listener, batches = build(world)
     world.say(DANA, "something from three years ago")
-    # Discovery records where the conversation stands and stays quiet: an
-    # account is in hundreds of these and almost all of them are dead.
+    # The first pass sets a watermark. An account is in hundreds of these and
+    # almost all are dead, so a quiet one is never stored, called or posted in.
     run(listener.cycle())
     run(listener.cycle())
     assert world.posted == [], "a silent conversation is never posted into"
     assert batches == []
+    assert listener._convos == {}, "nothing is tracked until it speaks"
+    assert world.history_calls == 0, "and it costs no per-conversation calls"
+
+
+def test_a_housekeeping_bump_is_not_somebody_talking():
+    world = World()
+    listener, _ = build(world)
+    world.say(DANA, "last words, long ago")
+    run(listener.cycle())  # watermark
+    # Slack bumps `updated` about a month after a conversation goes quiet.
+    world.housekeeping_bump()
+    run(listener.cycle())
+    assert world.posted == [], "a bump with no new message must not ask anyone"
+    assert listener._convos == {}
+
+
+def test_one_call_covers_any_number_of_quiet_conversations():
+    world = World()
+    for i in range(50):
+        world.convos[f"G{i}"] = world.blank()
+    listener, _ = build(world)
+    run(listener.cycle())
+    run(listener.cycle())
+    assert world.list_calls == 2, "one listing per cycle, whatever the count"
+    assert world.history_calls == 0
 
 
 def test_it_asks_before_it_reads():
     world = World()
     listener, batches = build(world)
     world.say(SCOTT, "something said before anyone was asked")
-    run(listener.cycle())  # baseline only
+    run(listener.cycle())  # watermark only
     assert world.posted == []
 
     world.say(DANA, "someone is talking again")
@@ -195,7 +232,7 @@ def test_it_asks_before_it_reads():
 def test_approval_does_not_reach_backwards():
     world = World()
     listener, batches = build(world)
-    run(listener.cycle())  # baseline
+    run(listener.cycle())  # watermark
     world.say(DANA, "said in private, before the ask")
     run(listener.cycle())  # the activity triggers the prompt
     world.react(APPROVE, SCOTT)
@@ -231,7 +268,7 @@ def test_a_decline_is_final():
 
 def approved(world, tmp_path=None, **kw):
     listener, batches = build(world, tmp_path=tmp_path, **kw)
-    run(listener.cycle())  # baseline
+    run(listener.cycle())  # watermark
     world.say(TOM, "starting a conversation")
     run(listener.cycle())  # asks
     world.react(APPROVE, SCOTT)
@@ -310,19 +347,21 @@ def test_the_budget_caps_calls_per_cycle():
     world = World()
     # Ten live conversations, a budget that only allows a few calls each cycle.
     for i in range(10):
-        world.convos[f"G{i}"] = {"members": [SCOTT, DANA], "messages": [], "reactions": {}}
+        world.convos[f"G{i}"] = world.blank()
     listener, _ = build(world, call_budget=4, members_every=0)
+    run(listener.cycle())  # watermark; nothing is tracked yet
+
+    for cid in list(world.convos):
+        world.say(DANA, "all of them wake up at once", convo=cid)
 
     per_cycle = []
     for _ in range(12):
-        for cid in list(world.convos):
-            world.say(DANA, "still talking", convo=cid)
         before = len(world.posted)
         run(listener.cycle())
         per_cycle.append(len(world.posted) - before)
 
-    # One discovery call plus at most three conversations per cycle, never more.
-    assert max(per_cycle) <= 3, per_cycle
+    # One listing call, and each ask costs two (confirm, then post).
+    assert max(per_cycle) <= 2, per_cycle
     # The round-robin keeps moving, so the tail is reached rather than starved.
     asked = [c for c, _, _ in world.posted]
     assert len(set(asked)) == len(asked), "no conversation asked twice"
