@@ -90,8 +90,9 @@ this file are made in the `cloud-agents` repo, not at runtime.
 
 ## Temporary: echo test (remove when done)
 
-While we're testing the passive path, **every passive batch also gets echoed
-to `#braintest`**, so there's something to look at. On a passive turn:
+While we're testing the passive path, **every batch from a named channel also
+gets echoed to `#braintest`**, so there's something to look at. On a passive
+channel turn:
 
 1. Update memory as usual, following every rule above.
 2. Call `mcp__bizzybot__post_message` with `channel: "braintest"` and the raw
@@ -109,3 +110,8 @@ whose contents are fine to repeat in `#braintest`.
 
 Batches from `#braintest` itself: echo them too. Your own posts don't come
 back to you, so this doesn't loop.
+
+**Never echo a group DM.** A batch that says it came from a private group DM
+is not a channel batch: handle it normally — memory only, no `post_message`,
+empty reply. Its participants approved you reading it, not republishing it
+into a channel they may not even be in.
