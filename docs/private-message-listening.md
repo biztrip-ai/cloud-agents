@@ -35,7 +35,7 @@ read, and about making the listening visible to everyone in the room.
 2. The agent's card on the Central-Dispatch dashboard shows **"Authorize
    private messages"**. It starts a Slack OAuth with `user_scope` only —
    `mpim:history`, `users:read` — and **no bot scopes**, so it doesn't disturb
-   the app's existing install.
+   the app's existing install. Group DMs only: see "Scopes" below.
 3. The callback stores `authed_user.access_token` in a new table, one row per
    (agent, slack_user_id): token, scopes, granted_at, revoked_at.
 4. The card lists who has authorized, each with a **Remove** that deletes the
@@ -171,15 +171,30 @@ prompt. Nothing is hidden — a bot in a public channel is visible to everyone �
 so no approval flow is needed. Open choices: interval, which channels, and
 whether it always posts a digest or speaks only when something crosses a bar.
 
+## Scopes: group DMs only
+
+The authorization asks for **`mpim:history`** (group DMs) and `users:read`
+(member ids → names), and nothing else. Slack scopes are per conversation
+type, so without `im:history`, `channels:history` or `groups:history` the token
+**cannot** read 1:1 DMs, public channels or private channels — not by policy
+but by construction. The consent screen shows the person exactly that.
+
+If private channels are wanted later, that is a deliberate extra scope and a
+re-authorization, not a quiet widening.
+
+## Stopping
+
+There is no "stop listening" command, and it doesn't need one: participants who
+want an unrecorded conversation start a new group DM, which is unapproved by
+default and silent unless someone asks for approval again. An authorizing user
+can also remove their authorization on the dashboard, which stops every read
+done with their token.
+
 ## Open questions
 
-1. Read scopes: `mpim:history` only, or also `im:history` (1:1 DMs) and
-   `groups:history` (private channels)?
-2. Where do recordings go beyond memory — does the agent report anywhere?
-3. What happens to a watched conversation that goes quiet for weeks: expire the
+1. Where do recordings go beyond memory — does the agent report anywhere?
+2. What happens to a watched conversation that goes quiet for weeks: expire the
    approval, or keep it indefinitely?
-4. Should a participant be able to say "stop listening" in the conversation
-   itself, rather than through an authorizing user?
 
 ## Build order
 
