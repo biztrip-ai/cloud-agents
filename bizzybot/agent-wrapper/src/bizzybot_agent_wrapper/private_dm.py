@@ -299,14 +299,25 @@ class PrivateDMListener:
         order = sorted(hot, key=lambda c: self._checked.get(c, 0.0)) + sorted(
             cold, key=lambda c: self._checked.get(c, 0.0)
         )
+        checked = 0
         for cid in order:
             if spent >= budget:
                 break
             spent += 1
+            checked += 1
             # An ask costs one more call than the check that found it, which
             # can take a tight budget one over. Asking is the rare case and the
             # whole point; the next cycle simply does that much less.
             spent += await self._check_activity(cid, owner[cid])
+        # One line a cycle, so "is it getting anywhere?" has an answer without
+        # a debug build: a full pass over a big account takes many cycles.
+        log.info(
+            "private DM sweep: %d checked this cycle, %d/%d conversations seen, %d tracked",
+            checked,
+            len(self._seen_ts),
+            len(owner) + len(self._convos),
+            len(self._convos),
+        )
         return spent
 
     async def _check_activity(self, cid: str, uid: str) -> int:
