@@ -23,6 +23,7 @@ btdash repo it works in.](docs/cloud-agent-factory.png)
 | `bin/agents` | Read and update a company's encrypted agent manifest |
 | `bizzybot/` | The Bizzybot control plane: `central-dispatch/` (server) and `agent-wrapper/` (the bridge each box runs) |
 | `factory/` | The BizTrip pipeline's role protocols (BzPM, Builder, Merger) |
+| `agents/` | Role protocols for agents outside the pipeline (BizzyBrain) |
 
 ## Running the Bizzybot bridge
 
