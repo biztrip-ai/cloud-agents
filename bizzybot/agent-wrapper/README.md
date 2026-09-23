@@ -278,6 +278,8 @@ it. See `docs/private-message-listening.md`.
 | `PRIVATE_DM_CALL_BUDGET` | Slack calls per cycle before round-robining (default 20) |
 | `PRIVATE_DM_MAX_MESSAGES` | messages per batch (default 50) |
 | `PRIVATE_DM_MEMBERS_EVERY` | re-check membership every Nth cycle (default 5) |
+| `PRIVATE_DM_BACKOFF` | re-check a quiet conversation every (time since its last message ÷ this) (default 16) |
+| `PRIVATE_DM_MAX_CHECK_S` | …but at least this often, in seconds (default 3600) |
 
 ## Receiving secrets: `bizzybot-dropbox`
 
