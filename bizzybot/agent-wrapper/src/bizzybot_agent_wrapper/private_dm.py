@@ -493,10 +493,13 @@ class PrivateDMListener:
         picked = self._client_for(convo)
         if not picked:
             return
+        # One quiet italic line in parentheses: it is posted as a person into
+        # their own conversation, and it should read like an aside, not a
+        # banner.
         text = (
-            f"Allow *{self._label}* to listen to this conversation and remember what's "
-            f"useful? React :{APPROVE}: to approve — two approvals needed, including one "
-            f"authorized member. React :{DECLINE}: to decline. Nothing is read until then."
+            f"_(May {self._label} listen here and remember what's useful? "
+            f"Two :{APPROVE}: to approve, one from an authorized member; "
+            f":{DECLINE}: to decline. Nothing is read until then.)_"
         )
         ts = await self._post(cid, convo, text)
         if ts:
