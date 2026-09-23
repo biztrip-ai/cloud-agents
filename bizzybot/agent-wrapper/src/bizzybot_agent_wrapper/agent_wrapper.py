@@ -1332,6 +1332,20 @@ PASSIVE_LISTENER: Optional["passive.PassiveListener"] = None
 SUPPORT_INBOX_HOOK: Optional[support_hook.SupportInboxHook] = None
 
 
+def in_engaged_thread(payload: Any, sessions: SessionManager) -> bool:
+    """Is this a reply in a channel thread the bot already has a conversation
+    in? Cheap checks only (a live session or a persisted resume id), the same
+    ones the normal path uses first; a thread we can't see in memory falls
+    through to whatever the caller does next."""
+    if not isinstance(payload, dict) or payload.get("type") != "message":
+        return False
+    channel, thread_ts = payload.get("channel"), payload.get("thread_ts")
+    if not channel or not thread_ts:
+        return False
+    key = f"{channel}:{thread_ts}"
+    return sessions.exists(key) or sessions.has_resume(key)
+
+
 async def dispatch_event(payload: Any, sessions: SessionManager, slack: AsyncWebClient) -> None:
     """Handle one Slack event delivered by Central-Dispatch."""
     bot_user_id = await get_bot_user_id(slack)
@@ -1345,9 +1359,14 @@ async def dispatch_event(payload: Any, sessions: SessionManager, slack: AsyncWeb
         AGENT_CHAIN.human()
     # Passive listening buffers channel chatter nobody addressed to us. It
     # declines anything the normal path would handle (a mention, our own words),
-    # so a message is never seen twice.
-    if PASSIVE_LISTENER is not None and await PASSIVE_LISTENER.offer(
-        payload, bot_user_id, _agent_allowlist()
+    # so a message is never seen twice. A reply in a thread we are already
+    # talking in is for us too, so it never goes to the buffer either — passive
+    # listening on a channel would otherwise swallow every follow-up under an
+    # answer we gave there.
+    if (
+        PASSIVE_LISTENER is not None
+        and not in_engaged_thread(payload, sessions)
+        and await PASSIVE_LISTENER.offer(payload, bot_user_id, _agent_allowlist())
     ):
         return
     if isinstance(payload, dict) and payload.get("bot_id"):
