@@ -62,19 +62,23 @@ class FakeUserClient:
         self.world.posted.append((channel, self.user, text))
         return {"ts": ts}
 
-    async def reactions_get(self, channel, timestamp, full=True):
-        r = self.world.convos[channel]["reactions"]
-        return {
-            "message": {
-                "reactions": [{"name": n, "users": sorted(u)} for n, u in r.items() if u]
-            }
-        }
+    # No reactions_get: the approval check reads the prompt message itself, so
+    # a call to it here would be an AttributeError — which is the point.
 
-    async def conversations_history(self, channel, oldest="0", limit=50, inclusive=False):
-        msgs = [
-            m for m in self.world.convos[channel]["messages"] if float(m["ts"]) > float(oldest or 0)
-        ]
+    async def conversations_history(
+        self, channel, oldest="0", latest=None, limit=50, inclusive=False
+    ):
+        c = self.world.convos[channel]
         self.world.history_calls += 1
+        if latest is not None and inclusive:
+            # Exactly one message, by ts, carrying its reactions — how Slack
+            # answers oldest == latest == ts.
+            m = next((m for m in c["messages"] if m["ts"] == str(latest)), None)
+            if not m:
+                return {"messages": []}
+            live = [{"name": n, "users": sorted(u)} for n, u in c["reactions"].items() if u]
+            return {"messages": [dict(m, **({"reactions": live} if live else {}))]}
+        msgs = [m for m in c["messages"] if float(m["ts"]) > float(oldest or 0)]
         return {"messages": list(reversed(msgs))[:limit]}
 
 
