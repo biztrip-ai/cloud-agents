@@ -1,7 +1,10 @@
 // Plain data-access functions over the db layer. Async so the same code works on
 // SQLite (sync driver, resolves immediately) and Postgres (async driver).
 import { randomUUID, randomBytes } from 'node:crypto';
-import { get, all, run, tx, isPg, AGENTS, EVENTS, WORKSPACE_SETTINGS } from './db.js';
+import {
+  get, all, run, tx, isPg,
+  AGENTS, EVENTS, WORKSPACE_SETTINGS, AGENT_USER_TOKENS,
+} from './db.js';
 
 export async function createAgent(name) {
   const id = randomUUID();
@@ -38,7 +41,8 @@ export async function getAgentById(id) {
 export async function listAgentsByTeam(teamId) {
   return all(
     `SELECT id, name, slack_app_id, registration_token, last_seen_at,
-            email_local_part, email_channel, email_sender_allow, sponsor_slack_user_id
+            email_local_part, email_channel, email_sender_allow, sponsor_slack_user_id,
+            private_messages_enabled
        FROM ${AGENTS} WHERE slack_team_id = ? ORDER BY created_at`,
     [teamId],
   );
@@ -242,4 +246,51 @@ export async function ackSeq(agentId, seq) {
   // events from the log — it's a queue, not an archive. Keeps storage bounded
   // and means a reconnect never re-delivers already-processed events.
   await run(`DELETE FROM ${EVENTS} WHERE agent_id = ? AND seq <= ?`, [agentId, seq]);
+}
+
+// --- Private-message listening (see docs/private-message-listening.md) -------
+
+// Off by default, per agent: only an agent whose flag is set can be authorized
+// to read group DMs at all, so the dashboard never offers it for BzPM & co.
+export async function setAgentPrivateMessages(id, enabled) {
+  await run(`UPDATE ${AGENTS} SET private_messages_enabled = ? WHERE id = ?`, [
+    enabled ? 1 : 0,
+    id,
+  ]);
+}
+
+// Store (or replace) one person's user token for one agent. Re-authorizing
+// overwrites the token and clears any earlier revocation.
+export async function putUserToken(agentId, slackUserId, token, scopes) {
+  await run(
+    `INSERT INTO ${AGENT_USER_TOKENS} (agent_id, slack_user_id, token, scopes, granted_at, revoked_at)
+     VALUES (?, ?, ?, ?, ?, NULL)
+     ON CONFLICT (agent_id, slack_user_id) DO UPDATE SET
+       token      = excluded.token,
+       scopes     = excluded.scopes,
+       granted_at = excluded.granted_at,
+       revoked_at = NULL`,
+    [agentId, slackUserId, token, scopes || null, Date.now()],
+  );
+}
+
+// The live grants for an agent — what the bridge reads group DMs with.
+export async function listUserTokens(agentId) {
+  return all(
+    `SELECT slack_user_id, token, scopes, granted_at FROM ${AGENT_USER_TOKENS}
+      WHERE agent_id = ? AND revoked_at IS NULL ORDER BY granted_at`,
+    [agentId],
+  );
+}
+
+// Revoking deletes the token itself: what it could read, it can no longer
+// read, and there is nothing left on disk to leak. The row survives with
+// revoked_at so "who authorized this, and when did it stop?" still has an
+// answer. Memories the agent already formed are untouched — see the spec.
+export async function revokeUserToken(agentId, slackUserId) {
+  await run(
+    `UPDATE ${AGENT_USER_TOKENS} SET token = '', revoked_at = ?
+      WHERE agent_id = ? AND slack_user_id = ? AND revoked_at IS NULL`,
+    [Date.now(), agentId, slackUserId],
+  );
 }

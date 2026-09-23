@@ -17,6 +17,10 @@ import {
   getWorkspaceSettings,
   setWorkspaceSettings,
   setAgentEmail,
+  setAgentPrivateMessages,
+  putUserToken,
+  listUserTokens,
+  revokeUserToken,
 } from './store.js';
 import { pushEvent, onlineIds, claimOfflineNotice } from './wsHub.js';
 import { getSession, setSession, clearSession } from './session.js';
@@ -27,6 +31,8 @@ import {
   exchangeCode,
   buildManifest,
   oidcAuthorizeUrl,
+  userAuthorizeUrl,
+  SLACK_USER_SCOPES,
   exchangeOidcCode,
   decodeIdToken,
   postSlackMessage,
@@ -143,6 +149,24 @@ router.get('/dashboard', async (req, res) => {
     const full = await getAgentById(a.id);
     sponsorNames.set(id, (await userName(full?.slack_bot_token, id)) || null);
   }
+  // Who has authorized private-message listening, per agent (names resolved
+  // with that agent's own bot token).
+  const grants = new Map(); // agentId -> [{ id, name, granted_at }]
+  for (const a of agents) {
+    if (!Number(a.private_messages_enabled)) continue;
+    const full = await getAgentById(a.id);
+    const rows = await listUserTokens(a.id);
+    grants.set(
+      a.id,
+      await Promise.all(
+        rows.map(async (r) => ({
+          id: r.slack_user_id,
+          name: (await userName(full?.slack_bot_token, r.slack_user_id)) || r.slack_user_id,
+          granted_at: r.granted_at,
+        })),
+      ),
+    );
+  }
   const ws = await getWorkspaceSettings(sess.teamId);
   const emailDomain = ws?.mailgun_domain || '';
   const online = onlineIds();
@@ -190,6 +214,55 @@ router.get('/dashboard', async (req, res) => {
           <button type="submit" style="${saveBtn}">Save</button>
         </div>
       </form>`;
+
+  // Private-message listening: off unless switched on here, and then only for
+  // the people who individually authorize it. See
+  // docs/private-message-listening.md.
+  const privateSection = (agent) => {
+    const on = Number(agent.private_messages_enabled);
+    const toggle = (to, label, title) => `
+      <form method="post" action="/dashboard/agent-private-messages" style="display:inline">
+        <input type="hidden" name="agentId" value="${escapeHtml(agent.id)}">
+        <input type="hidden" name="enabled" value="${to}">
+        <button type="submit" title="${title}"
+          style="border:0;background:none;color:#4A154B;text-decoration:underline;cursor:pointer;padding:0;font-size:inherit">${label}</button>
+      </form>`;
+    if (!on) {
+      return `
+      <div style="margin-top:12px;border-top:1px solid #eee;padding-top:12px;font-size:13px">
+        <p style="margin:0"><b>🔒 Private messages</b> — <span style="color:#666">off</span>
+        · ${toggle(1, 'enable', 'Let people authorize this agent to read group DMs they are in. Nothing is read until someone authorizes, and each conversation still needs approval in the conversation itself.')}</p>
+      </div>`;
+    }
+    const rows = grants.get(agent.id) || [];
+    const list = rows.length
+      ? rows
+          .map(
+            (g) => `<li style="margin:2px 0">${escapeHtml(g.name)} <span style="color:#999">· since ${fmtAgo(g.granted_at)}</span>
+              ${
+                g.id === sess.userId || sess.userId === agent.sponsor_slack_user_id
+                  ? `<form method="post" action="/dashboard/revoke-user-token" style="display:inline;margin-left:6px">
+                       <input type="hidden" name="agentId" value="${escapeHtml(agent.id)}">
+                       <input type="hidden" name="slackUserId" value="${escapeHtml(g.id)}">
+                       <button type="submit" title="Delete this token. Everything read through it stops; what the agent already remembered stays."
+                         style="border:0;background:none;color:#a11;text-decoration:underline;cursor:pointer;padding:0;font-size:inherit">remove</button>
+                     </form>`
+                  : ''
+              }</li>`,
+          )
+          .join('')
+      : '<li style="color:#999">nobody yet</li>';
+    const mine = rows.some((g) => g.id === sess.userId);
+    return `
+      <div style="margin-top:12px;border-top:1px solid #eee;padding-top:12px;font-size:13px">
+        <p style="margin:0 0 6px"><b>🔒 Private messages</b> — <span style="color:#161">on</span>
+        · ${toggle(0, 'disable', 'Switch off and revoke every authorization.')}</p>
+        <p style="margin:0 0 6px;color:#666">Authorized by:</p>
+        <ul style="margin:0 0 8px;padding-left:18px">${list}</ul>
+        ${btn(`/slack/authorize-private?agent=${encodeURIComponent(agent.id)}`, mine ? 'Re-authorize' : 'Authorize private messages')}
+        <p style="margin:8px 0 0;color:#666">Grants ${escapeHtml(SLACK_USER_SCOPES.join(', '))} on your account — group DMs only. Each conversation still asks its participants for approval before anything is recorded.</p>
+      </div>`;
+  };
 
   // The agent's sponsor — the human responsible for it, and the only Slack user
   // it runs shell commands for. Claimed by whoever first installed the app; the
@@ -244,6 +317,7 @@ router.get('/dashboard', async (req, res) => {
           style="padding:8px 14px;border:0;border-radius:6px;background:#4A154B;color:#fff;cursor:pointer;white-space:nowrap">Copy</button>
       </div>
       ${emailForm(agent)}
+      ${privateSection(agent)}
     </div>`;
   };
 
@@ -342,6 +416,40 @@ router.post('/dashboard/agent-email', async (req, res) => {
   res.redirect('/dashboard');
 });
 
+// Turn private-message listening on or off for one agent. Turning it off
+// revokes every grant with it: leaving live user tokens behind for a disabled
+// agent would be a trapdoor that reopens the moment someone re-enables it.
+router.post('/dashboard/agent-private-messages', async (req, res) => {
+  const sess = getSession(req);
+  if (!sess) return res.redirect('/login');
+  const { agentId, enabled } = req.body || {};
+  const agent = agentId ? await getAgentById(agentId) : null;
+  if (!agent || agent.slack_team_id !== sess.teamId) return res.status(403).send('forbidden');
+  const on = String(enabled) === '1';
+  await setAgentPrivateMessages(agentId, on);
+  if (!on) {
+    for (const t of await listUserTokens(agentId)) {
+      await revokeUserToken(agentId, t.slack_user_id);
+    }
+  }
+  res.redirect('/dashboard');
+});
+
+// Remove one person's authorization. Anyone in the workspace may remove their
+// own; the agent's sponsor may remove anyone's, since they answer for it.
+router.post('/dashboard/revoke-user-token', async (req, res) => {
+  const sess = getSession(req);
+  if (!sess) return res.redirect('/login');
+  const { agentId, slackUserId } = req.body || {};
+  const agent = agentId ? await getAgentById(agentId) : null;
+  if (!agent || agent.slack_team_id !== sess.teamId) return res.status(403).send('forbidden');
+  const mine = slackUserId && slackUserId === sess.userId;
+  const sponsor = sess.userId && sess.userId === agent.sponsor_slack_user_id;
+  if (!mine && !sponsor) return res.status(403).send('only you or the sponsor can remove that');
+  await revokeUserToken(agentId, slackUserId);
+  res.redirect('/dashboard');
+});
+
 // Hand an agent's sponsorship to the signed-in user (same workspace only).
 router.post('/dashboard/agent-sponsor', async (req, res) => {
   const sess = getSession(req);
@@ -371,6 +479,23 @@ router.get('/slack/install', (req, res) => {
   res.redirect(u.toString());
 });
 
+// Start a user-token grant for one agent: "Authorize private messages" on the
+// dashboard. User scopes only — no bot scopes — so the app's install is
+// untouched and the consent screen shows exactly what the token can reach.
+router.get('/slack/authorize-private', async (req, res) => {
+  const sess = getSession(req);
+  if (!sess) return res.redirect('/login');
+  const agent = req.query.agent ? await getAgentById(req.query.agent) : null;
+  if (!agent || agent.slack_team_id !== sess.teamId) return res.status(403).send('forbidden');
+  if (!Number(agent.private_messages_enabled)) {
+    return res.status(403).send('private messages are not enabled for that agent');
+  }
+  const app = config.slack.appById(agent.slack_app_id) || config.slack.primary;
+  if (!app.clientId) return res.status(500).send('Slack client credentials not configured');
+  const state = newState({ appId: app.appId || null, userAuth: true, agentId: agent.id });
+  res.redirect(userAuthorizeUrl(state, `${config.publicUrl}/slack/oauth/callback`, app));
+});
+
 router.get('/slack/oauth/callback', async (req, res) => {
   const { code, state, error } = req.query;
   if (error) return res.status(400).send(`Slack error: ${escapeHtml(error)}`);
@@ -382,6 +507,28 @@ router.get('/slack/oauth/callback', async (req, res) => {
   // Exchange with the same app's client credentials the install was started with.
   const app = config.slack.appById(pending.appId) || config.slack.primary;
   const data = await exchangeCode(code, `${config.publicUrl}/slack/oauth/callback`, app);
+
+  // A private-message authorization: one person granting *user* scopes to one
+  // agent. It carries no bot token and must not touch the app's install.
+  if (pending.userAuth) {
+    const user = data.authed_user || {};
+    if (!data.ok || !user.access_token || !user.id) {
+      return res.status(400).send(`authorization failed: ${escapeHtml(data.error || 'no user token')}`);
+    }
+    const agent = pending.agentId ? await getAgentById(pending.agentId) : null;
+    // The grant is only meaningful for an agent in the granter's own workspace
+    // that has private messages switched on.
+    if (!agent || agent.slack_team_id !== (data.team?.id ?? null)) {
+      return res.status(403).send('that agent is not in this workspace');
+    }
+    if (!Number(agent.private_messages_enabled)) {
+      return res.status(403).send('private messages are not enabled for that agent');
+    }
+    await putUserToken(agent.id, user.id, user.access_token, user.scope || '');
+    console.log(`[private-dm] ${user.id} authorized agent ${agent.id}`);
+    return res.redirect('/dashboard');
+  }
+
   if (!data.ok || !data.access_token) {
     return res.status(400).send(`token exchange failed: ${escapeHtml(data.error || 'unknown')}`);
   }
@@ -455,7 +602,29 @@ router.post('/api/register', async (req, res) => {
     agentId: agent.id,
     slackBotToken: agent.slack_bot_token || config.slack.botToken,
     sponsorSlackUserId: agent.sponsor_slack_user_id || null,
+    privateMessagesEnabled: Boolean(Number(agent.private_messages_enabled)),
     ws: { url: wsUrl, token },
+  });
+});
+
+// The user tokens an agent may currently read group DMs with. The bridge polls
+// this (POST, so the registration token stays out of URLs and access logs)
+// rather than taking them once at registration: a grant added or removed on the
+// dashboard then takes effect within a poll, with no restart.
+router.post('/api/user-tokens', async (req, res) => {
+  const token = req.body && req.body.token;
+  const agent = token ? await getAgentByToken(token) : null;
+  if (!agent) return res.status(401).json({ error: 'invalid registration token' });
+  const enabled = Boolean(Number(agent.private_messages_enabled));
+  const rows = enabled ? await listUserTokens(agent.id) : [];
+  res.json({
+    enabled,
+    tokens: rows.map((r) => ({
+      slackUserId: r.slack_user_id,
+      token: r.token,
+      scopes: r.scopes || '',
+      grantedAt: Number(r.granted_at),
+    })),
   });
 });
 

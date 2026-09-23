@@ -1,6 +1,38 @@
 # Private-message listening (design)
 
-**Status:** design, nothing built. Written 2026-09-22.
+**Status:** built, 2026-09-23. Written 2026-09-22 as a design; this section
+records where the build ended up differing from it. Everything else below
+describes what now runs.
+
+| Where | What |
+|---|---|
+| `bizzybot/central-dispatch/src/{db,store,routes,slack}.js` | the `private_messages_enabled` flag, the `agent_user_tokens` table, the user-scope OAuth and the dashboard section |
+| `bizzybot/agent-wrapper/src/bizzybot_agent_wrapper/private_dm.py` | discovery, approval, recording |
+| `bizzybot/central-dispatch/tests/`, `bizzybot/agent-wrapper/tests/test_private_dm.py` | `npm test` / `uv run --with pytest -m pytest tests` |
+
+**Differences from the design:**
+
+- **No gated read tool.** The design put a conversation-id read tool in front
+  of an allowlist. The build doesn't give the agent a tool at all: user tokens
+  never enter its context, so an agent that decides to read an unapproved
+  conversation has nothing to read it with. Same guarantee, less surface.
+- **Watched conversations live in the bridge**, in
+  `$BIZZYBOT_STATE_DIR/private_dms.json`, not in Central-Dispatch. The poller
+  is in the bridge, so the approval state and the read cursors sit next to it
+  rather than making a round trip; only the tokens are central, where the
+  dashboard can revoke them. There are no `watched_conversations` /
+  `conversation_approvals` tables.
+- **Two more user scopes than the design listed:** `chat:write` (the approval
+  prompt and the "is listening" notice have to be posted *as* an authorizing
+  user — an app can't post into a group DM) and `mpim:read` (member lists).
+  Still group DMs only; still no way to reach a 1:1 DM or a channel.
+- **Recording starts at the approval prompt**, never before it: the history
+  read is anchored to the prompt's timestamp, so what was said before anyone
+  was asked stays unread.
+- **Membership changes are a slow path.** Slack usually makes a *new* group DM
+  when the member list changes rather than mutating the old one, so the "is
+  listening" notice mostly fires for conversations that genuinely gained
+  someone. Members are re-checked every 5th cycle (`PRIVATE_DM_MEMBERS_EVERY`).
 
 An agent that follows group DMs it has been invited into by consent, and
 remembers what matters from them. Off by default: it is enabled per agent, and
@@ -153,12 +185,13 @@ Design for it anyway, since that can change:
 
 | Table | Holds |
 |---|---|
-| `agent_user_tokens` | agent_id, slack_user_id, token, scopes, granted_at, revoked_at |
-| `watched_conversations` | agent_id, conversation_id, state (pending / approved / declined), prompt_ts, members, last_ts |
-| `conversation_approvals` | conversation_id, slack_user_id, reaction, at |
+| `agent_user_tokens` (Central-Dispatch) | agent_id, slack_user_id, token, scopes, granted_at, revoked_at |
+| `private_dms.json` (the bridge's state dir) | per conversation: state (pending / approved / declined), members, prompt_ts, approvals, last_ts |
 
-Tokens live in Central-Dispatch, the same place as bot tokens, and are handed
-to the bridge at registration. Memories live on the agent's box under
+Tokens live in Central-Dispatch, the same place as bot tokens. The bridge
+fetches them every cycle from `POST /api/user-tokens` rather than taking them
+once at registration, so a grant added or removed on the dashboard takes effect
+within one poll and without a restart. Memories live on the agent's box under
 `/workspaces/<handle>/memory/`, one file per topic, each noting the
 conversation and date it came from.
 

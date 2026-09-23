@@ -13,6 +13,12 @@ export const EVENTS = usePg ? `${config.dbSchema}.events` : 'events';
 export const WORKSPACE_SETTINGS = usePg
   ? `${config.dbSchema}.workspace_settings`
   : 'workspace_settings';
+// Slack *user* tokens granted to an agent so it can read group DMs the bot
+// cannot be a member of (see docs/private-message-listening.md). One row per
+// (agent, user); a revoked row is kept, with revoked_at set, as a record.
+export const AGENT_USER_TOKENS = usePg
+  ? `${config.dbSchema}.agent_user_tokens`
+  : 'agent_user_tokens';
 
 let pool = null;
 let sqlite = null;
@@ -105,6 +111,10 @@ export async function init() {
     // The human responsible for this agent: set from the Slack user who
     // installed it, and the only user allowed to run shell commands through it.
     await pool.query(`ALTER TABLE ${AGENTS} ADD COLUMN IF NOT EXISTS sponsor_slack_user_id TEXT`);
+    // Private-message listening is off unless deliberately enabled per agent.
+    await pool.query(
+      `ALTER TABLE ${AGENTS} ADD COLUMN IF NOT EXISTS private_messages_enabled INTEGER NOT NULL DEFAULT 0`,
+    );
     // A local-part must be unique within a workspace (same local-part on two
     // different workspace domains is fine). Partial: only enforced when set.
     await pool.query(
@@ -134,6 +144,16 @@ export async function init() {
         updated_at       BIGINT NOT NULL
       )`);
     await pool.query(`ALTER TABLE ${WORKSPACE_SETTINGS} ADD COLUMN IF NOT EXISTS sender_allow TEXT`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ${AGENT_USER_TOKENS} (
+        agent_id       TEXT NOT NULL,
+        slack_user_id  TEXT NOT NULL,
+        token          TEXT NOT NULL,
+        scopes         TEXT,
+        granted_at     BIGINT NOT NULL,
+        revoked_at     BIGINT,
+        PRIMARY KEY (agent_id, slack_user_id)
+      )`);
     console.log(`[central-dispatch] storage: Postgres (schema "${config.dbSchema}")`);
   } else {
     sqlite.exec(`
@@ -158,6 +178,15 @@ export async function init() {
         payload    TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         UNIQUE (agent_id, seq)
+      );
+      CREATE TABLE IF NOT EXISTS agent_user_tokens (
+        agent_id       TEXT NOT NULL,
+        slack_user_id  TEXT NOT NULL,
+        token          TEXT NOT NULL,
+        scopes         TEXT,
+        granted_at     INTEGER NOT NULL,
+        revoked_at     INTEGER,
+        PRIMARY KEY (agent_id, slack_user_id)
       );
       CREATE TABLE IF NOT EXISTS workspace_settings (
         team_id          TEXT PRIMARY KEY,
@@ -187,6 +216,11 @@ export async function init() {
     }
     if (!cols.includes('sponsor_slack_user_id')) {
       sqlite.exec(`ALTER TABLE agents ADD COLUMN sponsor_slack_user_id TEXT`);
+    }
+    if (!cols.includes('private_messages_enabled')) {
+      sqlite.exec(
+        `ALTER TABLE agents ADD COLUMN private_messages_enabled INTEGER NOT NULL DEFAULT 0`,
+      );
     }
     sqlite.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS agents_team_email_local_part

@@ -30,6 +30,7 @@ import sys
 import tempfile
 import time
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 import ssl
@@ -38,7 +39,16 @@ import aiohttp
 from dotenv import load_dotenv
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import email_reply, passive, pr_poller, sentry_poller, shell_exec, slack_tools, support_hook
+from . import (
+    email_reply,
+    passive,
+    pr_poller,
+    private_dm,
+    sentry_poller,
+    shell_exec,
+    slack_tools,
+    support_hook,
+)
 from .paths import log_path, state_path
 from .session_manager import SessionManager, load_cli_mcp_servers
 from .settings import claude_env, load_settings, resolve
@@ -498,6 +508,17 @@ def passive_session_key(channel: str) -> str:
     return f"{PASSIVE_KEY_PREFIX}{channel}"
 
 
+# Group-DM sessions are silent for the same reason, and additionally must never
+# post: the bot isn't in the conversation and could only reach it by borrowing
+# somebody's user token, which no turn is allowed to do.
+PRIVATE_DM_KEY_PREFIX = "dm::"
+
+
+def private_dm_session_key(conversation: str) -> str:
+    """One conversation per watched group DM."""
+    return f"{PRIVATE_DM_KEY_PREFIX}{conversation}"
+
+
 def channel_session_key(channel: str) -> str:
     """Session key for the top-level conversation in a channel the bot created.
     Thread sessions are keyed `channel:thread_ts`; this one has no `:`, so
@@ -951,11 +972,11 @@ async def flush_background_results(
     session = sessions.get(thread_key)
     if session is None:
         return  # cleared/reaped since the hook fired — don't resurrect it
-    if thread_key.startswith(PASSIVE_KEY_PREFIX):
-        # A passive-listening session has no conversation to report into; its
-        # turns are silent by design. Whatever the sub-agent produced is in the
-        # log, and the next batch carries on.
-        log.info("flush: skipping passive session %s (nothing to post into)", thread_key)
+    if thread_key.startswith((PASSIVE_KEY_PREFIX, PRIVATE_DM_KEY_PREFIX)):
+        # A listening session has no conversation to report into; its turns are
+        # silent by design. Whatever the sub-agent produced is in the log, and
+        # the next batch carries on.
+        log.info("flush: skipping listening session %s (nothing to post into)", thread_key)
         return
     channel, _, thread_ts = thread_key.partition(":")
     # A channel-level session (see channel_session_key) has no thread: post at
@@ -1773,6 +1794,52 @@ async def main() -> None:
         else:
             log.info("passive listening disabled (set PASSIVE_LISTEN_CHANNELS or PASSIVE_LISTEN_ALL)")
 
+        # Group-DM listening. Switched on per agent in Central-Dispatch, and
+        # then only for the people who authorize it; the grants are fetched
+        # each cycle so adding or removing one needs no restart.
+        dm_listener: Optional[private_dm.PrivateDMListener] = None
+        if reg.get("privateMessagesEnabled"):
+            async def fetch_grants() -> list[dict[str, Any]]:
+                # ws_token is this agent's registration token (Central-Dispatch
+                # returns it as the WebSocket credential); it authenticates us.
+                async with http.post(
+                    f"{central_dispatch}/api/user-tokens",
+                    json={"token": ws_token},
+                    ssl=_insecure_tls_ctx(central_dispatch),
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+                return data.get("tokens") or []
+
+            async def on_dm_batch(conversation: str, text: str) -> None:
+                await handle_user_message(
+                    {
+                        "thread_key": private_dm_session_key(conversation),
+                        "channel": conversation,
+                        "reply_thread_ts": None,
+                        "text": text,
+                        "silent": True,
+                    },
+                    sessions,
+                    slack,
+                )
+
+            bot_id = await get_bot_user_id(slack)
+            bot_label = (await user_label(slack, bot_id) if bot_id else None) or "this agent"
+            dm_listener = private_dm.PrivateDMListener(
+                slack,
+                fetch_grants,
+                on_dm_batch,
+                agent_label=bot_label,
+                state_path=Path(state_path("private_dms.json")),
+            )
+            dm_listener.start()
+        else:
+            log.info(
+                "group-DM listening off (enable it for this agent on the "
+                "Central-Dispatch dashboard)"
+            )
+
         # Wake threads when a background sub-agent finishes (see the
         # "Background-task flush" section above). thread_key -> the task holding
         # that thread's coalescing window, so a window that closes never clears
@@ -1845,6 +1912,10 @@ async def main() -> None:
                 await poller.stop()
             if sentry_watch is not None:
                 await sentry_watch.stop()
+            if dm_listener is not None:
+                await dm_listener.stop()
+            if PASSIVE_LISTENER is not None:
+                await PASSIVE_LISTENER.stop()
             await sessions.close_all()
 
 
