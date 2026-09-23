@@ -222,7 +222,7 @@ class PrivateDMListener:
                     types="mpim", exclude_archived=True, limit=200
                 )
             except SlackApiError as e:
-                self._on_api_error(uid, e)
+                self._on_api_error(uid, e, "users.conversations")
                 continue
             for ch in resp.get("channels") or []:
                 cid = ch.get("id")
@@ -236,15 +236,28 @@ class PrivateDMListener:
                 convo.setdefault("found_by", uid)
         return spent
 
-    def _on_api_error(self, uid: str, e: SlackApiError) -> None:
-        code = (e.response.data or {}).get("error") if hasattr(e, "response") else None
+    def _on_api_error(self, uid: str, e: SlackApiError, method: str) -> None:
+        data = (e.response.data or {}) if hasattr(e, "response") else {}
+        code = data.get("error")
         if code in ("invalid_auth", "token_revoked", "account_inactive"):
             # The grant is gone on Slack's side; drop it until Central-Dispatch
             # agrees (it will, on the next fetch, once the dashboard catches up).
-            log.warning("private DM: token for %s is no longer valid", uid)
+            log.warning("private DM: token for %s is no longer valid (%s)", uid, code)
             self._clients.pop(uid, None)
+        elif code == "missing_scope":
+            # Name the scope: this is what a stale grant looks like after the
+            # Slack app's manifest gained a scope the token predates, and the
+            # fix is for that person to re-authorize on the dashboard.
+            log.warning(
+                "private DM: %s needs scope %s but the grant from %s has %s — "
+                "that person should re-authorize on the dashboard",
+                method,
+                data.get("needed"),
+                uid,
+                data.get("provided"),
+            )
         else:
-            log.warning("private DM: Slack error for %s: %s", uid, code or e)
+            log.warning("private DM: %s failed for %s: %s", method, uid, code or e)
 
     async def _refresh_members(self, cid: str, convo: dict[str, Any]) -> None:
         """Who is in the conversation. A new face gets a visible notice — a
@@ -256,7 +269,7 @@ class PrivateDMListener:
         try:
             resp = await client.conversations_members(channel=cid, limit=100)
         except SlackApiError as e:
-            self._on_api_error(uid, e)
+            self._on_api_error(uid, e, "conversations.members")
             return
         members = [m for m in (resp.get("members") or []) if m]
         if not members:
@@ -278,7 +291,7 @@ class PrivateDMListener:
             resp = await client.chat_postMessage(channel=cid, text=text)
             return resp.get("ts")
         except SlackApiError as e:
-            self._on_api_error(uid, e)
+            self._on_api_error(uid, e, "chat.postMessage")
             return None
 
     async def _latest_ts(self, cid: str, convo: dict[str, Any]) -> Optional[str]:
@@ -295,7 +308,7 @@ class PrivateDMListener:
         try:
             resp = await client.conversations_history(channel=cid, limit=1)
         except SlackApiError as e:
-            self._on_api_error(uid, e)
+            self._on_api_error(uid, e, "conversations.history")
             return None
         msgs = resp.get("messages") or []
         return msgs[0].get("ts") if msgs else None
@@ -341,7 +354,7 @@ class PrivateDMListener:
         try:
             resp = await client.reactions_get(channel=cid, timestamp=convo["prompt_ts"], full=True)
         except SlackApiError as e:
-            self._on_api_error(uid, e)
+            self._on_api_error(uid, e, "reactions.get")
             return
         reactions = ((resp.get("message") or {}).get("reactions")) or []
         by_name = {r.get("name"): set(r.get("users") or []) for r in reactions}
@@ -369,7 +382,7 @@ class PrivateDMListener:
                 channel=cid, oldest=convo.get("last_ts") or "0", limit=self._max, inclusive=False
             )
         except SlackApiError as e:
-            self._on_api_error(uid, e)
+            self._on_api_error(uid, e, "conversations.history")
             return
         msgs = [
             m
