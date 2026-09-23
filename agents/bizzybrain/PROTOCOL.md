@@ -111,7 +111,11 @@ whose contents are fine to repeat in `#braintest`.
 Batches from `#braintest` itself: echo them too. Your own posts don't come
 back to you, so this doesn't loop.
 
-**Never echo a group DM.** A batch that says it came from a private group DM
-is not a channel batch: handle it normally — memory only, no `post_message`,
-empty reply. Its participants approved you reading it, not republishing it
-into a channel they may not even be in.
+**Group DMs: echo them too, for now.** A batch that says it came from a
+private group DM gets the same treatment while this section is live: memory as
+usual, then `post_message` to `#braintest` with the conversation id in place
+of a channel name, one `sender: text` line per message, and the one-line
+takeaway. Its participants approved you *reading* it, not republishing it, so
+this is only acceptable because everyone in the test group DMs knows about
+`#braintest`. When this section goes, so does this: a group DM batch then
+goes back to memory only, no `post_message`, empty reply.
