@@ -3,9 +3,10 @@
 BizzyBrain's memory is an **Obsidian vault**: a folder of plain Markdown
 files with YAML frontmatter, `[[wikilinks]]` and `#tags`, laid out so that
 anyone can open it in Obsidian and read, search and graph what the agent
-knows. The Obsidian app never runs on the box; the agent reads and writes the
-files directly. The format is plain text, so nothing depends on Obsidian
-itself.
+knows. The agent reads and writes the files directly; the format is plain
+text, so the notes never depend on Obsidian. Obsidian also runs on the box,
+headless, so the agent can query the vault with `obsidian-cli` (see "Using
+obsidian-cli").
 
 The vault is `/workspaces/bizzybrain/vault/`. Everything BizzyBrain remembers
 lives there. The raw Slack log does **not**: it stays in
@@ -37,9 +38,10 @@ Rules for the layout:
   under the right heading in `Home.md`. This is the first thing you read when
   answering a question, so keep it current and keep it to links with a
   few-word gloss each.
-- **Don't rename or move notes.** Obsidian fixes links on rename; you can't.
-  If a rename is unavoidable, grep the vault for the old name and update
-  every `[[link]]`.
+- **Don't rename or move notes** without a reason. When you must, use
+  `obsidian-cli rename` or `move`, which update every `[[link]]` to the
+  note, then check `obsidian-cli unresolved` reports nothing. Never rename
+  with `mv`.
 
 ## Note format
 
@@ -178,9 +180,12 @@ On a direct question:
 
 1. Read `Home.md` to see what notes exist.
 2. Open the notes the question touches, and follow their `[[links]]` one hop
-   when needed.
-3. `grep -ril` the vault for names or terms that `Home.md` didn't surface.
-4. Read `reflections.md` for the pattern behind the facts.
+   when needed; `obsidian-cli backlinks` shows what links *to* a note.
+3. `obsidian-cli search` (or `grep -ril`) the vault for names or terms that
+   `Home.md` didn't surface.
+4. For list questions ("who's on the board?", "which prospects do we
+   have?"), query a Base view instead of reading every note.
+5. Read `reflections.md` for the pattern behind the facts.
 
 Answer from what you found, with citations; if the vault has nothing, say so.
 The boundary rule from the protocol applies to every note: a fact from a
@@ -203,6 +208,32 @@ frontmatter included. A person's note holds their work contact details, their
 role, what they own and what they said about the work, and nothing about them
 as a private individual.
 
+## Using obsidian-cli
+
+`obsidian-cli` talks to the Obsidian app running on the box
+(`obsidian.service`). Run it from the vault directory so it picks this
+vault. The useful commands:
+
+```sh
+cd /workspaces/bizzybrain/vault
+obsidian-cli search query="Sabre queue" [path=people] [limit=20]
+obsidian-cli backlinks file="Cain Travel" [counts]
+obsidian-cli links file="Moderna"
+obsidian-cli base:query path=People.base view="Board" format=md
+obsidian-cli base:query path=Companies.base view="Prospects" format=md
+obsidian-cli unresolved                 # dangling [[links]]: should be none
+obsidian-cli orphans                    # notes nothing links to
+obsidian-cli rename path="people/Nik.md" name="Nik Taylor"
+```
+
+- **Write notes with ordinary file edits**, as above. The CLI is for
+  querying, and for renames and moves so links stay intact.
+- After a batch of writes, `obsidian-cli unresolved` is a quick check that
+  every link you added points at a note.
+- If the CLI prints "unable to find Obsidian", run
+  `systemctl is-active obsidian.service`; the vault files are still fine
+  to read and write directly, so fall back to `grep`.
+
 ## Operating the vault (for humans)
 
 - **Open it in Obsidian.** Copy the folder to your machine and open it as a
@@ -220,6 +251,25 @@ as a private individual.
   `reflections.md`. Moving an older `memory/` directory in: topic files go to
   `vault/topics/`, `reflections.md` to the vault root, and each moved file
   gets frontmatter and a `Home.md` entry the next time the agent touches it.
+- **Obsidian on the box.** The app runs headless so the agent can use the
+  CLI. To set it up on a fresh Ubuntu box, as `ubuntu`:
+
+  ```sh
+  curl -fsSL -o /tmp/obsidian.deb https://github.com/obsidianmd/obsidian-releases/releases/download/v1.13.7/obsidian_1.13.7_amd64.deb
+  sudo apt-get install -y xvfb /tmp/obsidian.deb
+  # Register the vault and enable the CLI (Settings > General > Command line interface).
+  mkdir -p ~/.config/obsidian
+  echo '{"vaults":{"'$(openssl rand -hex 8)'":{"path":"/workspaces/bizzybrain/vault","ts":'$(date +%s000)',"open":true}},"cli":true}' > ~/.config/obsidian/obsidian.json
+  ```
+
+  Then add `/etc/systemd/system/obsidian.service` (`User=ubuntu`,
+  `Environment=HOME=/home/ubuntu`, `ExecStart=/usr/bin/xvfb-run
+  --server-num=99 --server-args="-screen 0 1280x800x24 -nolisten tcp"
+  /opt/Obsidian/obsidian --disable-gpu`, `Restart=on-failure`) and enable
+  it. Last, install `/usr/local/bin/obsidian-cli` as a wrapper that runs
+  `env -u XDG_RUNTIME_DIR /opt/Obsidian/obsidian-cli "$@"`. The service has
+  no `XDG_RUNTIME_DIR`, so Obsidian listens on `~/.obsidian-cli.sock`, and
+  an SSH shell would otherwise look in `/run/user/<uid>`.
 - **Sync is a later decision.** The vault is a plain folder, so a git repo
   with a deploy key, Syncthing or Obsidian Sync would all work. The box has no
   GitHub access on purpose, so a git-backed vault means a deploy key scoped
