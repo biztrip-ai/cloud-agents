@@ -87,36 +87,38 @@ For each group DM the bridge records id, member ids and last activity.
 
 **The tracking list starts empty and only grows when a conversation speaks.**
 A real account is in hundreds of group DMs — 181 on the first account we tried
-— and nearly all are years dormant. Asking on discovery posts into every one
-of them (we did that once, and stopped it after 19). Tracking them all instead
-is almost as bad: it costs a Slack call per conversation per sweep, which is
-twenty minutes of calls to learn that nothing happened.
+— and nearly all are years dormant. The first version asked every one of them
+on discovery, which posted an approval request into 19 dead conversations
+before it was stopped.
 
-Slack's listing already carries what we need. Each conversation has an
-`updated` field which, for a group DM, **is the timestamp of its last
-message** (verified: 0s difference on live conversations). So one
-`users.conversations` call per authorizing user — the call we already make —
-says which of their hundreds of conversations have spoken since the last
-watermark. Everything below the watermark is not stored, not called, and not
-posted into.
+The second version tried to avoid polling them: Slack's conversation listing
+carries an `updated` field, and on the conversations we sampled it matched the
+last message exactly. It does not. Those conversations matched because *we*
+had just posted into them through the API; a group DM with a message from
+today can report `updated` from three months earlier. `updated` tracks
+changes to the conversation object, not its messages.
 
-One wrinkle: `updated` is also bumped about a month after a conversation goes
-quiet, by Slack's own housekeeping. So a conversation that crosses the
-watermark is confirmed against its actual last message before anybody is
-asked. That check reads one timestamp — never the text.
+There is no one-call answer. `users.counts` (what the Slack client uses)
+refuses a granular user token — `not_allowed_token_type` — and
+`conversations.info` carries no `latest` for a group DM. So the last message
+is asked for **per conversation**, one call each, and the budget is spent
+where something is likely to have happened: conversations that spoke recently
+first, then the dormant tail in rotation. A conversation that has not spoken
+since the agent started listening is looked at but never tracked, never asked
+and never posted into.
 
-**Content is gated in the bridge, not by instruction.** The read tool takes a
-conversation id and checks the allowlist:
+Each of those calls reads one **timestamp**. The text is never looked at,
+stored, or handed to the agent.
 
-- not approved → returns metadata only (id, members, "new activity since X")
-- approved → returns messages
+### Why there is no webhook
 
-So an agent that decides to read an unapproved conversation still cannot: the
-content never enters its context. The protocol says the same thing in prose,
-but the tool is what enforces it.
-
-Every read is logged (which conversation, which token, how many messages), so
-"what has it seen?" has an answer.
+The Events API delivers only what the *app* can see, and an app cannot be a
+member of a group DM — which is the reason this feature needs a user token at
+all. The only user-scoped event stream is RTM, which needs the legacy `client`
+scope (classic apps only, and it returns `missing_scope` for us) and would
+stream every conversation the person is in, which is exactly the access this
+design exists to avoid. So the delay between a message and the approval
+request is the poll interval plus the sweep position, and that is inherent.
 
 ## Approval
 

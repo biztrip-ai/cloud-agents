@@ -7,6 +7,7 @@ an approval by two bystanders, a conversation nobody authorized is in.
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -87,7 +88,10 @@ class FakeUserClient:
 
 class World:
     def __init__(self, members=(SCOTT, DANA, TOM)):
-        self._ts = 100.0
+        # Real epoch seconds: the listener compares message timestamps against
+        # the moment it started listening, so a toy clock would put every
+        # message in the distant past and nothing would ever fire.
+        self._ts = time.time() - 3600
         self.convos = {CONVO: self.blank(members)}
         self.posted = []
         self.history_calls = 0
@@ -95,11 +99,14 @@ class World:
         self.grants = []
 
     def blank(self, members=(SCOTT, DANA)):
-        # `updated` starts at the conversation's creation, as Slack's does.
+        # `updated` starts at the conversation's creation, as Slack's does —
+        # and, as we found the hard way, stays there even when messages arrive.
         return {"members": list(members), "messages": [], "reactions": {}, "updated": 1.0}
 
     def next_ts(self):
-        self._ts += 1
+        # Messages happen "now": what matters to the listener is whether a
+        # message is newer than the moment it started.
+        self._ts = max(time.time(), self._ts + 0.001)
         return round(self._ts, 6)
 
     def say(self, user, text, convo=CONVO):
@@ -162,37 +169,38 @@ def test_a_dormant_conversation_is_never_tracked():
     world = World()
     listener, batches = build(world)
     world.say(DANA, "something from three years ago")
-    # The first pass sets a watermark. An account is in hundreds of these and
-    # almost all are dead, so a quiet one is never stored, called or posted in.
+    # It gets looked at — there is no way to learn a last message without
+    # asking — but a conversation that has not spoken since we started is
+    # never tracked and never posted into.
     run(listener.cycle())
     run(listener.cycle())
     assert world.posted == [], "a silent conversation is never posted into"
     assert batches == []
     assert listener._convos == {}, "nothing is tracked until it speaks"
-    assert world.history_calls == 0, "and it costs no per-conversation calls"
 
 
-def test_a_housekeeping_bump_is_not_somebody_talking():
+def test_slacks_updated_field_is_not_trusted():
+    """A group DM with a message today can report `updated` from months ago,
+    which is how the second version of this got it wrong."""
     world = World()
     listener, _ = build(world)
-    world.say(DANA, "last words, long ago")
-    run(listener.cycle())  # watermark
-    # Slack bumps `updated` about a month after a conversation goes quiet.
-    world.housekeeping_bump()
     run(listener.cycle())
-    assert world.posted == [], "a bump with no new message must not ask anyone"
-    assert listener._convos == {}
+    world.say(DANA, "something new")
+    world.convos[CONVO]["updated"] = 1.0  # Slack's listing, stale as ever
+    run(listener.cycle())
+    assert len(world.posted) == 1, "the ask must not depend on `updated`"
 
 
-def test_one_call_covers_any_number_of_quiet_conversations():
+def test_the_sweep_stays_inside_its_budget():
     world = World()
     for i in range(50):
         world.convos[f"G{i}"] = world.blank()
-    listener, _ = build(world)
-    run(listener.cycle())
-    run(listener.cycle())
-    assert world.list_calls == 2, "one listing per cycle, whatever the count"
-    assert world.history_calls == 0
+    listener, _ = build(world, call_budget=20)
+    for _ in range(3):
+        before = world.history_calls + world.list_calls
+        run(listener.cycle())
+        assert world.history_calls + world.list_calls - before <= 20
+    assert world.posted == [], "51 quiet conversations, nobody asked anything"
 
 
 def test_it_asks_before_it_reads():
@@ -360,7 +368,8 @@ def test_the_budget_caps_calls_per_cycle():
         run(listener.cycle())
         per_cycle.append(len(world.posted) - before)
 
-    # One listing call, and each ask costs two (confirm, then post).
+    # An ask costs two calls (the check, then the post), so a budget of four
+    # buys at most one per cycle.
     assert max(per_cycle) <= 2, per_cycle
     # The round-robin keeps moving, so the tail is reached rather than starved.
     asked = [c for c, _, _ in world.posted]
