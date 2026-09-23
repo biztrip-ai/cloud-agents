@@ -19,8 +19,18 @@ Every cycle (default 2 minutes) the listener:
 1. Fetches the current grants from Central-Dispatch, so a dashboard change
    takes effect without a restart.
 2. Discovers group DMs each authorizing user is in (metadata only).
-3. Asks unapproved ones for approval, and polls the prompt's reactions.
-4. Reads what's new in approved ones and hands it over as one silent turn.
+3. Watches unregistered ones for *activity*, and asks for approval only when
+   somebody says something new in one. A real account is in hundreds of group
+   DMs, nearly all of them years dormant; asking all of them on discovery
+   would post into every one of them. The first time a conversation is seen,
+   its latest timestamp is recorded as a baseline and nothing is posted —
+   only a message after that is a reason to ask.
+4. Polls an asked conversation's reactions, and reads what's new in approved
+   ones, handing each batch over as one silent turn.
+
+The activity check reads one message's **timestamp** and nothing else: the
+text is never looked at, never stored and never handed to the agent. Content
+still requires approval.
 
 Configuration (agent.env):
 
@@ -222,7 +232,7 @@ class PrivateDMListener:
                 if convo is None:
                     convo = {"state": "pending", "found_by": uid, "members": []}
                     self._convos[cid] = convo
-                    log.info("private DM: discovered %s (pending approval)", cid)
+                    log.info("private DM: discovered %s (watching for activity)", cid)
                 convo.setdefault("found_by", uid)
         return spent
 
@@ -270,6 +280,42 @@ class PrivateDMListener:
         except SlackApiError as e:
             self._on_api_error(uid, e)
             return None
+
+    async def _latest_ts(self, cid: str, convo: dict[str, Any]) -> Optional[str]:
+        """The timestamp of the most recent message, and nothing else.
+
+        Deliberately does not return, log or keep the message: before approval
+        the only thing we are allowed to know about a conversation is that
+        somebody said *something*.
+        """
+        picked = self._client_for(convo)
+        if not picked:
+            return None
+        uid, client = picked
+        try:
+            resp = await client.conversations_history(channel=cid, limit=1)
+        except SlackApiError as e:
+            self._on_api_error(uid, e)
+            return None
+        msgs = resp.get("messages") or []
+        return msgs[0].get("ts") if msgs else None
+
+    async def _watch_for_activity(self, cid: str, convo: dict[str, Any]) -> None:
+        """Ask for approval, but only once the conversation is alive again."""
+        ts = await self._latest_ts(cid, convo)
+        if ts is None:
+            convo.setdefault("seen_ts", "0")  # empty conversation: nothing to wait for
+            return
+        baseline = convo.get("seen_ts")
+        if baseline is None:
+            # First sighting: remember where it stands and stay quiet. An old
+            # conversation that never speaks again is never asked.
+            convo["seen_ts"] = ts
+            return
+        if float(ts) <= float(baseline):
+            return
+        convo["seen_ts"] = ts
+        await self._ask(cid, convo)
 
     async def _ask(self, cid: str, convo: dict[str, Any]) -> None:
         picked = self._client_for(convo)
@@ -382,7 +428,7 @@ class PrivateDMListener:
             state = convo.get("state")
             if state == "pending" and not convo.get("prompt_ts"):
                 budget -= 1
-                await self._ask(cid, convo)
+                await self._watch_for_activity(cid, convo)
             elif state == "pending":
                 budget -= 1
                 await self._check_approval(cid, convo)

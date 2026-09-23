@@ -75,7 +75,7 @@ class FakeUserClient:
             m for m in self.world.convos[channel]["messages"] if float(m["ts"]) > float(oldest or 0)
         ]
         self.world.history_calls += 1
-        return {"messages": list(reversed(msgs[:limit]))}
+        return {"messages": list(reversed(msgs))[:limit]}
 
 
 class World:
@@ -142,11 +142,26 @@ def test_nothing_happens_without_a_grant():
     assert world.history_calls == 0, "must not read a single message"
 
 
+def test_a_dormant_conversation_is_never_asked():
+    world = World()
+    listener, batches = build(world)
+    world.say(DANA, "something from three years ago")
+    # Discovery records where the conversation stands and stays quiet: an
+    # account is in hundreds of these and almost all of them are dead.
+    run(listener.cycle())
+    run(listener.cycle())
+    assert world.posted == [], "a silent conversation is never posted into"
+    assert batches == []
+
+
 def test_it_asks_before_it_reads():
     world = World()
     listener, batches = build(world)
     world.say(SCOTT, "something said before anyone was asked")
+    run(listener.cycle())  # baseline only
+    assert world.posted == []
 
+    world.say(DANA, "someone is talking again")
     run(listener.cycle())
     assert len(world.posted) == 1
     channel, who, text = world.posted[0]
@@ -176,8 +191,9 @@ def test_it_asks_before_it_reads():
 def test_approval_does_not_reach_backwards():
     world = World()
     listener, batches = build(world)
+    run(listener.cycle())  # baseline
     world.say(DANA, "said in private, before the ask")
-    run(listener.cycle())  # posts the prompt
+    run(listener.cycle())  # the activity triggers the prompt
     world.react(APPROVE, SCOTT)
     world.react(APPROVE, DANA)
     run(listener.cycle())  # approves
@@ -196,6 +212,8 @@ def test_a_decline_is_final():
     world = World()
     listener, batches = build(world)
     run(listener.cycle())
+    world.say(TOM, "hello")
+    run(listener.cycle())
     world.react(DECLINE, TOM)
     run(listener.cycle())
     assert listener._convos[CONVO]["state"] == "declined"
@@ -209,7 +227,9 @@ def test_a_decline_is_final():
 
 def approved(world, tmp_path=None, **kw):
     listener, batches = build(world, tmp_path=tmp_path, **kw)
-    run(listener.cycle())
+    run(listener.cycle())  # baseline
+    world.say(TOM, "starting a conversation")
+    run(listener.cycle())  # asks
     world.react(APPROVE, SCOTT)
     world.react(APPROVE, DANA)
     run(listener.cycle())
@@ -284,17 +304,25 @@ def test_state_survives_a_restart(tmp_path):
 
 def test_the_budget_caps_calls_per_cycle():
     world = World()
-    # Ten conversations, a budget that only allows a few calls.
+    # Ten live conversations, a budget that only allows a few calls each cycle.
     for i in range(10):
         world.convos[f"G{i}"] = {"members": [SCOTT, DANA], "messages": [], "reactions": {}}
     listener, _ = build(world, call_budget=4, members_every=0)
-    run(listener.cycle())
-    asked = len(world.posted)
-    assert 0 < asked <= 3, f"one discovery call + at most 3 prompts, got {asked}"
-    # The next cycle picks up where it left off rather than re-asking the front.
-    run(listener.cycle())
-    assert len(world.posted) > asked
-    assert len({c for c, _, _ in world.posted}) == len(world.posted), "no conversation asked twice"
+
+    per_cycle = []
+    for _ in range(12):
+        for cid in list(world.convos):
+            world.say(DANA, "still talking", convo=cid)
+        before = len(world.posted)
+        run(listener.cycle())
+        per_cycle.append(len(world.posted) - before)
+
+    # One discovery call plus at most three conversations per cycle, never more.
+    assert max(per_cycle) <= 3, per_cycle
+    # The round-robin keeps moving, so the tail is reached rather than starved.
+    asked = [c for c, _, _ in world.posted]
+    assert len(set(asked)) == len(asked), "no conversation asked twice"
+    assert len(set(asked)) == len(world.convos), f"only {len(set(asked))} of 11 reached"
 
 
 @pytest.fixture(autouse=True)
