@@ -244,6 +244,40 @@ class SlackRenderer:
             log.exception("chat_update (error message) failed")
 
 
+class SilentRenderer:
+    """Renders nothing. Used for turns nobody asked for — a passive-listening
+    batch, say — where posting a "thinking…" placeholder into the channel would
+    be noise. Same surface as SlackRenderer so the turn loop needs no branches;
+    what the agent says is logged, not posted."""
+
+    def __init__(self) -> None:
+        self.text = ""
+
+    async def open(self) -> bool:
+        return True
+
+    async def mark_active(self) -> None:
+        return None
+
+    async def append(self, text: str) -> None:
+        self.text += text
+
+    async def status(self, label: str) -> None:
+        return None
+
+    def clear_status(self) -> None:
+        return None
+
+    async def flush(self, force: bool = False) -> None:
+        return None
+
+    async def replace_with(self, text: str) -> None:
+        return None
+
+    async def delete(self) -> None:
+        return None
+
+
 async def download_slack_files(files: list[dict[str, Any]], token: str) -> list[str]:
     """Download Slack file attachments (url_private needs the bot token) into a
     temp dir; return the local paths so the agent can read them."""

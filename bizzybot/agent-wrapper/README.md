@@ -170,6 +170,35 @@ it doesn't prefer those cached credentials over the OpenRouter token.
 - Events are acked by sequence; if the agent-wrapper is offline, Central-Dispatch holds events
   and replays them on reconnect.
 
+## Passive listening in a channel
+
+Normally a channel message only wakes the agent when it @-mentions it. An agent
+that should *follow* a channel — noticing decisions and remembering them —
+turns on passive listening. Invite it to the channel (public or private): that
+invite is the consent, it appears in the member list, and reading uses the bot
+token.
+
+```sh
+PASSIVE_LISTEN_CHANNELS=C0123,#eng   # channel ids or names
+PASSIVE_LISTEN_ALL=1                 # or: every channel the agent is in
+PASSIVE_FLUSH_S=120                  # how long a batch may wait (default 120)
+PASSIVE_MAX_MESSAGES=50              # flush early at this many (default 50)
+```
+
+With neither channel setting, passive listening is off and nothing changes.
+
+It costs no API calls: Central-Dispatch already delivers `message.*` events for
+every channel the app is in, and the bridge buffers the ones nobody addressed
+to the agent. Each channel's batch becomes **one silent turn** — no "thinking…"
+placeholder, nothing posted, the agent's reply only logged — so a busy channel
+is neither expensive nor noisy. What is never batched: the agent's own
+messages, other apps' messages (unless they are in `AGENT_MENTIONS_FROM`),
+joins and leaves, edits, and anything that mentions the agent, which wakes it
+through the normal path instead.
+
+Each listened channel gets its own session, so the agent keeps context across
+batches.
+
 ## Long waits: `heartbeat`
 
 A turn can only post when it ends, so a tool that blocks for minutes (a CI
