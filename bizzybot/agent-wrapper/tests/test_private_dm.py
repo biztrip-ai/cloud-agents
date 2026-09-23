@@ -11,6 +11,8 @@ import time
 
 import pytest
 
+from slack_sdk.errors import SlackApiError
+
 from bizzybot_agent_wrapper import private_dm
 from bizzybot_agent_wrapper.private_dm import APPROVE, DECLINE, PrivateDMListener
 
@@ -43,22 +45,35 @@ class FakeUserClient:
         self.user = user
         self.token = f"xoxp-{user}"
 
-    async def users_conversations(self, **kw):
+    async def users_conversations(self, cursor=None, **kw):
         assert kw.get("types") == "mpim", "group DMs only"
-        # Slack's listing carries `updated` — for a group DM, its last message
-        # in milliseconds. That one field is what drives the whole design.
+        # Slack's listing carries `created` (which the sweep trusts) and
+        # `updated` (which, as we found the hard way, it must not).
         chans = [
-            {"id": cid, "updated": int(float(c["updated"]) * 1000)}
+            {
+                "id": cid,
+                "created": int(c["created"]),
+                "updated": int(float(c["updated"]) * 1000),
+            }
             for cid, c in self.world.convos.items()
             if self.user in c["members"]
         ]
         self.world.list_calls += 1
-        return {"channels": chans}
+        if not self.world.page_size:
+            return {"channels": chans}
+        # Cursor pagination, the way Slack does it: a cursor per page and an
+        # empty one on the last.
+        start = int(cursor or 0)
+        page = chans[start : start + self.world.page_size]
+        nxt = str(start + self.world.page_size) if start + self.world.page_size < len(chans) else ""
+        return {"channels": page, "response_metadata": {"next_cursor": nxt}}
 
     async def conversations_members(self, channel, **kw):
         return {"members": list(self.world.convos[channel]["members"])}
 
     async def chat_postMessage(self, channel, text):
+        if channel in self.world.cannot_post:
+            raise SlackApiError("missing_scope", FakeResponse({"error": "missing_scope", "needed": "chat:write"}))
         ts = f"{self.world.next_ts()}"
         c = self.world.convos[channel]
         c["messages"].append({"ts": ts, "user": self.user, "text": text})
@@ -86,27 +101,55 @@ class FakeUserClient:
         return {"messages": list(reversed(msgs))[:limit]}
 
 
+class FakeResponse:
+    def __init__(self, data):
+        self.data = data
+
+
 class World:
     def __init__(self, members=(SCOTT, DANA, TOM)):
-        # Real epoch seconds: the listener compares message timestamps against
-        # the moment it started listening, so a toy clock would put every
-        # message in the distant past and nothing would ever fire.
-        self._ts = time.time() - 3600
+        # The world has its own clock, and the listener reads it too (see
+        # `build`): a cycle is two minutes apart, as in production, and a test
+        # can jump ahead an hour to see what the sweep does with silence.
+        # Real epoch seconds, since the listener compares message timestamps
+        # against the moment it started listening.
+        self.clock = time.time()
+        self._ts = self.clock - 600
         self.convos = {CONVO: self.blank(members)}
         self.posted = []
         self.history_calls = 0
         self.list_calls = 0
         self.grants = []
+        self.page_size = None  # listing pages, None for one page
+        self.cannot_post = set()  # conversations where chat.postMessage fails
 
-    def blank(self, members=(SCOTT, DANA)):
+    def blank(self, members=(SCOTT, DANA), created=None):
         # `updated` starts at the conversation's creation, as Slack's does —
         # and, as we found the hard way, stays there even when messages arrive.
-        return {"members": list(members), "messages": [], "reactions": {}, "updated": 1.0}
+        # `created` defaults to ten minutes before the listener starts.
+        return {
+            "members": list(members),
+            "messages": [],
+            "reactions": {},
+            "updated": 1.0,
+            "created": self.clock - 600 if created is None else created,
+        }
+
+    def ancient(self, members=(SCOTT, DANA)):
+        """A group DM from years ago that nobody has touched since."""
+        c = self.blank(members, created=self.clock - 3 * 365 * 86400)
+        c["messages"].append({"ts": f"{c['created'] + 60:.6f}", "user": DANA, "text": "old"})
+        return c
+
+    def tick(self, seconds):
+        self.clock += seconds
 
     def next_ts(self):
-        # Messages happen "now": what matters to the listener is whether a
-        # message is newer than the moment it started.
-        self._ts = max(time.time(), self._ts + 0.001)
+        # Messages happen "now", and time moves on: a message said right after
+        # a cycle is a second later than that cycle's watermark, not the same
+        # instant.
+        self.clock = max(self.clock, self._ts) + 1
+        self._ts = self.clock
         return round(self._ts, 6)
 
     def say(self, user, text, convo=CONVO):
@@ -143,11 +186,20 @@ def build(world, grant_users=(SCOTT,), tmp_path=None, **kw):
         **{"members_every": 1, **kw},
     )
     # The real thing builds an AsyncWebClient per token; swap in fakes.
-    orig = private_dm.AsyncWebClient
     private_dm.AsyncWebClient = lambda token: FakeUserClient(  # noqa: E731
         world, token.removeprefix("xoxp-")
     )
-    listener._restore = lambda: setattr(private_dm, "AsyncWebClient", orig)
+    # The listener tells time by the world's clock, and each cycle is one
+    # poll interval after the last, as it would be in production. (The autouse
+    # fixture reloads the module afterwards, undoing both swaps.)
+    private_dm.time = type("Clock", (), {"time": staticmethod(lambda: world.clock)})
+    real_cycle = listener.cycle
+
+    async def cycle():
+        world.tick(listener._interval)
+        await real_cycle()
+
+    listener.cycle = cycle
     return listener, batches
 
 
@@ -375,6 +427,107 @@ def test_the_budget_caps_calls_per_cycle():
     asked = [c for c, _, _ in world.posted]
     assert len(set(asked)) == len(asked), "no conversation asked twice"
     assert len(set(asked)) == len(world.convos), f"only {len(set(asked))} of 11 reached"
+
+
+def test_a_new_group_dm_jumps_the_queue():
+    """Somebody opens a group DM and says something: that is the case the
+    whole feature exists for, and it must not wait behind a backlog of old
+    conversations that the sweep hasn't got to yet."""
+    world = World()
+    for i in range(60):
+        world.convos[f"G{i}"] = world.ancient()
+    listener, _ = build(world, call_budget=10)
+    run(listener.cycle())  # watermark; a fraction of the backlog checked
+    assert len(listener._checked) < 20, "the backlog is far from done"
+
+    world.tick(30)
+    fresh = "G_fresh"
+    world.convos[fresh] = world.blank((SCOTT, DANA), created=world.clock)
+    world.say(DANA, "hey, new group", convo=fresh)
+    run(listener.cycle())
+    assert [c for c, _, _ in world.posted] == [fresh], "the new conversation is asked first"
+
+
+def test_quiet_conversations_are_not_polled_every_cycle():
+    world = World()
+    world.convos[CONVO] = world.ancient()
+    for i in range(30):
+        world.convos[f"G{i}"] = world.ancient()
+    listener, _ = build(world, call_budget=100)
+    run(listener.cycle())
+    assert world.history_calls == 31, "the first pass looks at everything once"
+
+    run(listener.cycle())
+    assert world.history_calls == 31, "two minutes later, nothing is worth a second look"
+
+    world.tick(3600)
+    run(listener.cycle())
+    assert world.history_calls == 62, "an hour on, every quiet conversation gets one call"
+
+    # An old conversation that comes back to life is noticed within the cap,
+    # an hour by default, not on the next cycle. That is the trade: a brand-new
+    # group DM is asked within a cycle (see the previous test), a revived one
+    # within the hour, and the dormant tail costs one call an hour each.
+    world.say(DANA, "something", convo="G3")
+    run(listener.cycle())
+    assert world.posted == [], "G3 was looked at a moment ago and isn't due yet"
+    world.tick(3600)
+    run(listener.cycle())
+    assert [c for c, _, _ in world.posted] == ["G3"]
+
+
+def test_the_sweep_schedule_survives_a_restart(tmp_path):
+    world = World()
+    world.convos[CONVO] = world.ancient()
+    for i in range(30):
+        world.convos[f"G{i}"] = world.ancient()
+    listener, _ = build(world, tmp_path=tmp_path, call_budget=100)
+    run(listener.cycle())
+    first_pass = world.history_calls
+
+    listener2, _ = build(world, tmp_path=tmp_path, call_budget=100)
+    run(listener2.cycle())
+    assert world.history_calls == first_pass, "a restart must not replay the first pass"
+    assert listener2._started_at == listener._started_at
+
+
+def test_the_listing_is_paginated():
+    world = World()
+    for i in range(9):
+        world.convos[f"G{i}"] = world.blank()
+    world.page_size = 4
+    listener, _ = build(world, call_budget=100)
+    run(listener.cycle())
+    assert world.list_calls == 3, "three pages of four"
+    assert len(listener._checked) == 10, "every conversation on every page was looked at"
+
+
+def test_a_failed_ask_does_not_poison_the_cycle():
+    """A grant that can read but not post (a token from before chat:write was
+    added) must not leave behind a pending ask with nothing to poll."""
+    world = World()
+    world.convos["G_other"] = world.blank((SCOTT, DANA))
+    world.cannot_post.add(CONVO)
+    listener, batches = build(world)
+    run(listener.cycle())  # watermark
+    world.say(DANA, "talking in the room the bot can't post to")
+    run(listener.cycle())
+    assert CONVO not in listener._convos, "an ask that never landed is not tracked"
+
+    # Life goes on: the other conversation is still asked and approved.
+    world.say(DANA, "hello", convo="G_other")
+    run(listener.cycle())
+    assert [c for c, _, _ in world.posted] == ["G_other"]
+    world.react(APPROVE, SCOTT, convo="G_other")
+    world.react(APPROVE, DANA, convo="G_other")
+    run(listener.cycle())
+    assert listener._convos["G_other"]["state"] == "approved"
+
+    # The failing one keeps being retried, and works once the grant is fixed.
+    world.cannot_post.clear()
+    run(listener.cycle())
+    assert listener._convos[CONVO]["state"] == "pending"
+    assert listener._convos[CONVO]["prompt_ts"]
 
 
 @pytest.fixture(autouse=True)

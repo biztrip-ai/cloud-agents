@@ -19,7 +19,8 @@ Every cycle (default 2 minutes) the listener:
 1. Fetches the current grants from Central-Dispatch, so a dashboard change
    takes effect without a restart.
 2. Sweeps group DMs for ones that have said something since we started,
-   spending its call budget on recently-active conversations first.
+   looking at brand-new conversations first and re-checking old ones the
+   less often the longer they have been quiet.
 3. Asks those, and only those, for approval.
 4. Polls an asked conversation's reactions, and reads what's new in approved
    ones, handing each batch over as one silent turn.
@@ -31,8 +32,12 @@ which posted into 19 dead conversations before it was stopped; the second
 tried to spot live ones from the `updated` field in Slack's conversation
 listing, which turned out not to be the last-message time at all (a group DM
 with a message from today reported `updated` from three months earlier). So
-the last message is asked for per conversation, one call each, and the budget
-goes to conversations that spoke recently before the long dormant tail.
+the last message is asked for per conversation, one call each. What the
+listing *does* carry is `created`, which is enough to spot a brand-new group
+DM without a call: those are checked first, ahead of any backlog. Everything
+else is re-checked on a schedule that stretches with silence — a conversation
+quiet for ten minutes is looked at every cycle, one quiet for a day about once
+an hour — so the dormant tail costs a few calls an hour instead of hundreds.
 
 There is no push to replace this. An app cannot join a group DM, so Slack
 sends it no events for one, and the only user-scoped event stream (RTM) needs
@@ -47,6 +52,8 @@ Configuration (agent.env):
     PRIVATE_DM_CALL_BUDGET=20     max Slack calls per cycle (round-robin above it)
     PRIVATE_DM_MAX_MESSAGES=50    messages per batch handed to the agent
     PRIVATE_DM_MEMBERS_EVERY=5    re-check membership every Nth cycle
+    PRIVATE_DM_BACKOFF=16         re-check a quiet conversation every (quiet time / this)
+    PRIVATE_DM_MAX_CHECK_S=3600   ...but at least this often
 
 Off unless Central-Dispatch says the agent is enabled *and* somebody has
 authorized it.
@@ -137,12 +144,15 @@ class PrivateDMListener:
         # business, and this is the only thing besides tracked conversations
         # that has to survive a restart.
         self._started_at: Optional[float] = None
-        # Last message time and last poll time per conversation, for spending
-        # the call budget where something is likely to have happened. In
-        # memory only: losing it costs one sweep to relearn.
+        # Last message time and last check time per conversation: the sweep
+        # schedule. Persisted, so a restart doesn't replay a full pass over
+        # every conversation before it can tell new from old.
         self._seen_ts: dict[str, float] = {}
         self._checked: dict[str, float] = {}
-        self._hot_s = _float_env("PRIVATE_DM_HOT_S", 24 * 3600)
+        # Creation time from the listing, refreshed every cycle. Not persisted.
+        self._created: dict[str, float] = {}
+        self._backoff = max(_float_env("PRIVATE_DM_BACKOFF", 16), 1.0)
+        self._max_check = max(_float_env("PRIVATE_DM_MAX_CHECK_S", 3600), self._interval)
         self._clients: dict[str, AsyncWebClient] = {}  # slack user id -> their client
         self._cursor = 0  # round-robin position when the budget runs out
         self._cycle = 0
@@ -172,7 +182,19 @@ class PrivateDMListener:
                 if dropped:
                     log.info("private DM: dropped %d untouched conversation(s)", dropped)
             self._started_at = data.get("started_at") or data.get("watermark")
-            log.info("private DM state: %d tracked", len(self._convos))
+            for name, attr in (("seen", "_seen_ts"), ("checked", "_checked")):
+                raw = data.get(name)
+                if isinstance(raw, dict):
+                    setattr(
+                        self,
+                        attr,
+                        {k: float(v) for k, v in raw.items() if isinstance(v, (int, float))},
+                    )
+            log.info(
+                "private DM state: %d tracked, %d conversation(s) on the sweep schedule",
+                len(self._convos),
+                len(self._checked),
+            )
         except Exception:  # noqa: BLE001 — corrupt state just starts over
             log.warning("could not read %s; starting fresh", self._state_path, exc_info=True)
 
@@ -184,7 +206,12 @@ class PrivateDMListener:
             tmp = self._state_path.with_suffix(".tmp")
             tmp.write_text(
                 json.dumps(
-                    {"started_at": self._started_at, "conversations": self._convos},
+                    {
+                        "started_at": self._started_at,
+                        "conversations": self._convos,
+                        "seen": self._seen_ts,
+                        "checked": self._checked,
+                    },
                     indent=1,
                 )
             )
@@ -245,6 +272,21 @@ class PrivateDMListener:
         self._clients = fresh
         return bool(fresh)
 
+    def _due_at(self, cid: str, now: float) -> float:
+        """When a conversation we have looked at before is worth another call.
+
+        The gap grows with the silence: quiet for ten minutes, look every cycle;
+        quiet for a day, about once an hour (`PRIVATE_DM_BACKOFF` divides the
+        quiet time, `PRIVATE_DM_MAX_CHECK_S` caps the result). A conversation
+        that has never said anything is measured from its creation.
+        """
+        checked = self._checked.get(cid)
+        if checked is None:
+            return 0.0
+        last = self._seen_ts.get(cid) or self._created.get(cid) or 0.0
+        quiet = max(now - last, 0.0)
+        return checked + min(max(quiet / self._backoff, self._interval), self._max_check)
+
     async def _sweep(self, budget: int) -> int:
         """Find conversations that have spoken since we started listening.
 
@@ -254,12 +296,19 @@ class PrivateDMListener:
         conversation the person is in. So we poll, and the only question is how
         few calls it takes.
 
-        Slack's listing does not help: a conversation's `updated` field is NOT
-        its last message (measured — a group DM with a message today still
-        reported `updated` from June). So the last message has to be asked for
-        per conversation, one call each, and the budget is spent on the ones
-        most likely to have moved: conversations that spoke recently, then
-        everything else in rotation.
+        Slack's listing does not help with activity: a conversation's `updated`
+        field is NOT its last message (measured — a group DM with a message
+        today still reported `updated` from June). So the last message has to
+        be asked for per conversation, one call each. The listing does carry
+        `created`, though, and that is the one thing that costs nothing:
+
+        1. **Brand new** — created since we started listening and never looked
+           at. These are the ones somebody just opened, and they go first,
+           ahead of any backlog, newest first.
+        2. **Never looked at** — the backlog after a first start (the schedule
+           is persisted, so this is empty after a restart). Newest first.
+        3. **Due** — looked at before, and quiet long enough that the schedule
+           says it's time again (`_due_at`). Most overdue first.
 
         Each call reads one **timestamp**. The text is never looked at, stored
         or handed to the agent; a conversation only becomes readable after its
@@ -268,20 +317,32 @@ class PrivateDMListener:
         spent = 0
         owner: dict[str, str] = {}
         for uid, client in list(self._clients.items()):
-            if spent >= budget:
-                break
-            spent += 1
-            try:
-                resp = await client.users_conversations(
-                    types="mpim", exclude_archived=True, limit=200
-                )
-            except SlackApiError as e:
-                self._on_api_error(uid, e, "users.conversations")
-                continue
-            for ch in resp.get("channels") or []:
-                cid = ch.get("id")
-                if cid and cid not in self._convos:
-                    owner.setdefault(cid, uid)
+            cursor: Optional[str] = None
+            while spent < budget:
+                spent += 1
+                try:
+                    resp = await client.users_conversations(
+                        types="mpim",
+                        exclude_archived=True,
+                        limit=200,
+                        **({"cursor": cursor} if cursor else {}),
+                    )
+                except SlackApiError as e:
+                    self._on_api_error(uid, e, "users.conversations")
+                    break
+                for ch in resp.get("channels") or []:
+                    cid = ch.get("id")
+                    if not cid:
+                        continue
+                    created = ch.get("created")
+                    if created:
+                        self._created[cid] = float(created)
+                    if cid not in self._convos:
+                        owner.setdefault(cid, uid)
+                # An account past one page would otherwise silently lose the rest.
+                cursor = (resp.get("response_metadata") or {}).get("next_cursor") or None
+                if not cursor:
+                    break
 
         if self._started_at is None:
             # Nothing said before we existed is our business. From here on,
@@ -294,17 +355,13 @@ class PrivateDMListener:
             )
 
         now = time.time()
-        # Conversations we have never looked at come first: until we have seen
-        # one, it could be hiding a message from this morning, while one we
-        # checked a minute ago could at worst be hiding a message from a minute
-        # ago. After that, recently-active conversations, which are the ones
-        # likely to move, then everything else — each group oldest-check first.
-        unseen = [c for c in owner if c not in self._seen_ts]
-        seen = [c for c in owner if c in self._seen_ts]
-        hot = [c for c in seen if now - self._seen_ts[c] < self._hot_s]
-        cold = [c for c in seen if now - self._seen_ts[c] >= self._hot_s]
-        by_check = lambda group: sorted(group, key=lambda c: self._checked.get(c, 0.0))
-        order = by_check(unseen) + by_check(hot) + by_check(cold)
+        started = self._started_at
+        never = [c for c in owner if c not in self._checked]
+        new = [c for c in never if self._created.get(c, 0.0) >= started]
+        backlog = [c for c in never if self._created.get(c, 0.0) < started]
+        due = [c for c in owner if c in self._checked and self._due_at(c, now) <= now]
+        newest_first = lambda group: sorted(group, key=lambda c: -self._created.get(c, 0.0))
+        order = newest_first(new) + newest_first(backlog) + sorted(due, key=lambda c: self._due_at(c, now))
         checked = 0
         for cid in order:
             if spent >= budget:
@@ -316,11 +373,15 @@ class PrivateDMListener:
             # whole point; the next cycle simply does that much less.
             spent += await self._check_activity(cid, owner[cid])
         # One line a cycle, so "is it getting anywhere?" has an answer without
-        # a debug build: a full pass over a big account takes many cycles.
+        # a debug build. The backlog only exists on a first start.
         log.info(
-            "private DM sweep: %d checked this cycle, %d/%d conversations seen, %d tracked",
+            "private DM sweep: %d checked this cycle (%d brand new, %d due, %d backlog left), "
+            "%d/%d conversations seen, %d tracked",
             checked,
-            len(self._seen_ts),
+            len(new),
+            len(due),
+            sum(1 for c in never if c not in self._checked),
+            len(self._checked),
             len(owner) + len(self._convos),
             len(self._convos),
         )
@@ -336,12 +397,19 @@ class PrivateDMListener:
             return 0
         latest = float(ts)
         previous = self._seen_ts.get(cid, 0.0)
-        self._seen_ts[cid] = latest
         if latest <= max(self._started_at or 0.0, previous):
+            self._seen_ts[cid] = latest
             return 0  # quiet since we started, or nothing new since last look
-        self._convos[cid] = convo
         log.info("private DM: %s has spoken; asking", cid)
         await self._ask(cid, convo)
+        if not convo.get("prompt_ts"):
+            # The ask didn't land (a grant without chat:write, say). Don't track
+            # a pending ask that has no prompt to poll; forget the check too, so
+            # the next cycle simply tries again.
+            self._checked.pop(cid, None)
+            return 1
+        self._seen_ts[cid] = latest
+        self._convos[cid] = convo
         return 1
 
     def _on_api_error(self, uid: str, e: SlackApiError, method: str) -> None:
@@ -438,6 +506,8 @@ class PrivateDMListener:
             log.info("private DM: asked %s for approval", cid)
 
     async def _check_approval(self, cid: str, convo: dict[str, Any]) -> None:
+        if not convo.get("prompt_ts"):
+            return  # nothing was ever posted, so there is nothing to poll
         picked = self._client_for(convo)
         if not picked:
             return

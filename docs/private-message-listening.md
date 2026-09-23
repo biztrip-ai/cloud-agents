@@ -101,11 +101,25 @@ changes to the conversation object, not its messages.
 There is no one-call answer. `users.counts` (what the Slack client uses)
 refuses a granular user token — `not_allowed_token_type` — and
 `conversations.info` carries no `latest` for a group DM. So the last message
-is asked for **per conversation**, one call each, and the budget is spent
-where something is likely to have happened: conversations that spoke recently
-first, then the dormant tail in rotation. A conversation that has not spoken
-since the agent started listening is looked at but never tracked, never asked
-and never posted into.
+is asked for **per conversation**, one call each. What the listing *does*
+carry, reliably, is `created`, and that is the one thing that costs nothing:
+
+1. **Brand new** — created since the agent started listening and never looked
+   at. That is somebody opening a group DM, the case this feature exists for,
+   and it is checked first, ahead of any backlog. Noticed within one cycle.
+2. **Never looked at** — the backlog on a first start (a fresh account with
+   181 group DMs is a few cycles of it). Newest first.
+3. **Due** — looked at before, and quiet long enough that it is worth another
+   call. The gap grows with the silence: quiet for ten minutes, every cycle;
+   quiet for a day, once an hour (`PRIVATE_DM_BACKOFF` divides the quiet time,
+   `PRIVATE_DM_MAX_CHECK_S` caps it). A revived old conversation is therefore
+   noticed within the hour, and the dormant tail costs one call an hour each
+   instead of a full rotation every twenty minutes.
+
+The schedule (last message time and last check time per conversation) is
+saved with the rest of the state, so a restart does not replay the first pass.
+A conversation that has not spoken since the agent started listening is looked
+at but never tracked, never asked and never posted into.
 
 Each of those calls reads one **timestamp**. The text is never looked at,
 stored, or handed to the agent.
