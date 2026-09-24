@@ -140,8 +140,8 @@ Jane Doe runs corporate travel at [[Acme]] and is our main contact there.
   and summary line. Don't create a company note for a firm BizTrip has no
   relationship with.
 - **One note per person across sources.** Before creating one, grep
-  `people/` for their email and name; Slack display names, mail senders and
-  Jira users are often the same person.
+  `people/` for their email and name; Slack display names, mail senders,
+  Jira users and HubSpot contacts are often the same person.
 
 Every company is a note in `companies/`, named the way people say it:
 
