@@ -208,7 +208,12 @@ async function listAll(token, method, params, key) {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
-    if (!data.ok) throw new Error(`${method}: ${data.error}`);
+    if (!data.ok) {
+      const err = new Error(`${method}: ${data.error}`);
+      err.slackError = data.error;
+      err.needed = data.needed; // the missing scope(s), on missing_scope
+      throw err;
+    }
     out.push(...(data[key] || []));
     cursor = data.response_metadata?.next_cursor || '';
   } while (cursor);
@@ -228,16 +233,30 @@ function cached(ttlMs, load) {
   };
 }
 
-// Channels the bot can see, as { id, name, isPrivate, isMember }. A bot can
-// only post where it is a member.
-export const botChannels = cached(60_000, async (token) =>
-  (await listAll(token, 'conversations.list', {
-    types: 'public_channel,private_channel',
-    exclude_archived: 'true',
-  }, 'channels'))
-    .map((c) => ({ id: c.id, name: c.name, isPrivate: Boolean(c.is_private), isMember: Boolean(c.is_member) }))
-    .sort((a, b) => a.name.localeCompare(b.name)),
-);
+// Channels the bot can see, as { channels: [{ id, name, isPrivate, isMember }],
+// missingScopes }. A bot can only post where it is a member. Public and
+// private channels need separate scopes (channels:read, groups:read), and an
+// app installed before they were added lacks them until it is reinstalled:
+// each type is listed on its own, so one missing scope doesn't hide the other
+// type, and missingScopes names what a reinstall would add.
+export const botChannels = cached(60_000, async (token) => {
+  const channels = [];
+  const missingScopes = [];
+  for (const [type, scope] of [['public_channel', 'channels:read'], ['private_channel', 'groups:read']]) {
+    try {
+      channels.push(...await listAll(token, 'conversations.list', { types: type, exclude_archived: 'true' }, 'channels'));
+    } catch (e) {
+      if (e.slackError !== 'missing_scope') throw e;
+      missingScopes.push(e.needed || scope);
+    }
+  }
+  return {
+    channels: channels
+      .map((c) => ({ id: c.id, name: c.name, isPrivate: Boolean(c.is_private), isMember: Boolean(c.is_member) }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    missingScopes,
+  };
+});
 
 // The workspace's people and bots, for turning @handles into real mentions.
 export const workspaceUsers = cached(10 * 60_000, (token) =>

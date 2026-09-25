@@ -25,6 +25,8 @@ const express = (await import('express')).default;
 const { init, all } = await import('../src/db.js');
 const store = await import('../src/store.js');
 const sched = await import('../src/scheduled_tasks.js');
+const { attachWsHub } = await import('../src/wsHub.js');
+const { WebSocket } = await import('ws');
 
 const TEAM = 'T1';
 const MIN = 60_000;
@@ -38,6 +40,7 @@ const USERS = [
 const CHANNELS = [
   { id: 'C_brain', name: 'braincenter', is_member: true },
   { id: 'C_other', name: 'random', is_member: false },
+  { id: 'C_secret', name: 'secret', is_member: true, is_private: true },
 ];
 let posts = [];
 let postError = null;
@@ -47,7 +50,15 @@ globalThis.fetch = async (url, opts = {}) => {
   if (u.host !== 'slack.com') return realFetch(url, opts);
   const reply = (body) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
   switch (u.pathname) {
-    case '/api/conversations.list': return reply({ ok: true, channels: CHANNELS });
+    case '/api/conversations.list': {
+      // An app installed before groups:read was added can't list private channels.
+      const old = opts.headers?.Authorization === 'Bearer xoxb-old';
+      if (old && u.searchParams.get('types').includes('private_channel')) {
+        return reply({ ok: false, error: 'missing_scope', needed: 'groups:read' });
+      }
+      const types = u.searchParams.get('types').split(',');
+      return reply({ ok: true, channels: CHANNELS.filter((c) => types.includes(c.is_private ? 'private_channel' : 'public_channel')) });
+    }
     case '/api/users.list': return reply({ ok: true, members: USERS });
     case '/api/users.info': return reply({ ok: true, user: { real_name: 'Scott Persinger' } });
     case '/api/chat.postMessage': {
@@ -86,9 +97,11 @@ before(async () => {
   await init();
   await sched.initScheduledTasksTable();
   const app = express();
+  app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
   app.use(sched.scheduledRouter);
   server = http.createServer(app);
+  attachWsHub(server);
   await new Promise((r) => server.listen(0, r));
   base = `http://127.0.0.1:${server.address().port}`;
   agent = await store.createAgent('BzPM');
@@ -245,4 +258,109 @@ test('send now posts off schedule and leaves the schedule alone', async () => {
   const [t] = await tasks();
   assert.equal(Number(t.next_run_at), Number(before.next_run_at));
   assert.ok(t.last_run_at);
+});
+
+test('a bot missing a channel scope still lists what it can, and says how to fix it', async () => {
+  const old = await store.createAgent('Bizzy');
+  await store.setAgentSlack(old.id, { teamId: TEAM, appId: 'A2', botToken: 'xoxb-old' });
+  const page = await (await fetch(`${base}/dashboard/scheduled`, { headers: { Cookie: cookieFor('U0SCOTT') } })).text();
+  const bizzy = page.match(new RegExp(`<select name="channel" data-agent="${old.id}"[\\s\\S]*?</select>`))[0];
+  assert.match(bizzy, /#braincenter/); // public channels still listed
+  assert.doesNotMatch(bizzy, /secret/);
+  assert.match(page, /Bizzy's Slack app is missing groups:read, so\s+private channels\s+can’t be listed/);
+  assert.match(page, /#braincenter[\s\S]*🔒secret/); // BzPM, with every scope, sees both
+});
+
+// --- Silent prompts ------------------------------------------------------------------
+
+// Connect as the agent's bridge would, and collect the events pushed to it.
+async function connectAgent(a) {
+  const ws = new WebSocket(`${base.replace('http', 'ws')}/ws?token=${a.registrationToken}&lastSeq=0`);
+  const events = [];
+  ws.on('message', (d) => {
+    const m = JSON.parse(d.toString());
+    if (m.type === 'event') {
+      events.push(m.event);
+      ws.send(JSON.stringify({ type: 'ack', seq: m.seq }));
+    }
+  });
+  await new Promise((r) => ws.on('open', r));
+  await new Promise((r) => setTimeout(r, 50)); // let the hub finish registering
+  return { ws, events };
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 50));
+
+function report(body) {
+  return fetch(`${base}/api/task-result`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+}
+
+test('a silent task prompts the agent, posts nothing, and shows its reply', async () => {
+  const brain = await store.createAgent('BizzyBrain');
+  await store.setAgentSlack(brain.id, { teamId: TEAM, appId: 'A3', botToken: 'xoxb-brain' });
+  const { ws, events } = await connectAgent(brain);
+  try {
+    const start = Date.now() + 60 * MIN;
+    await post('/dashboard/scheduled', {
+      agentId: brain.id, mode: 'prompt', interval: '10', runAt: String(start), text: '@BizzyBrain check Moderna news',
+    });
+    let [t] = await tasks();
+    assert.equal(t.mode, 'prompt');
+    assert.equal(t.text, '@BizzyBrain check Moderna news'); // a prompt, not a Slack message: left as typed
+
+    await sched.runDueTasks(start);
+    await settle();
+    assert.equal(posts.length, 0);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, 'scheduled_prompt');
+    const { task_id: taskId, run_id: runId, text } = events[0].payload;
+    assert.equal(taskId, t.id);
+    assert.equal(text, '@BizzyBrain check Moderna news');
+
+    // Still running at the next slot: that run is skipped, not stacked.
+    await sched.runDueTasks(start + 10 * MIN);
+    await settle();
+    assert.equal(events.length, 1);
+
+    // Only this agent, and only for the run it was handed.
+    assert.equal((await report({ token: 'nope', task_id: taskId, run_id: runId })).status, 401);
+    assert.equal((await report({ token: agent.registrationToken, task_id: taskId, run_id: runId })).status, 404);
+    assert.equal((await report({ token: brain.registrationToken, task_id: taskId, run_id: 'old' })).status, 409);
+    const ok = await report({
+      token: brain.registrationToken, task_id: taskId, run_id: runId,
+      ok: true, text: 'Nothing new since yesterday.', cost_usd: 0.4213, duration_ms: 12000,
+    });
+    assert.equal(ok.status, 200);
+    [t] = await tasks();
+    assert.equal(t.running_since, null);
+    assert.equal(t.last_result, 'Nothing new since yesterday.');
+    assert.equal(Number(t.last_cost_usd), 0.4213);
+
+    const page = await (await fetch(`${base}/dashboard/scheduled`, { headers: { Cookie: cookieFor('U0SCOTT') } })).text();
+    assert.match(page, /silent prompt/);
+    assert.match(page, /Nothing new since yesterday\./);
+    assert.match(page, /\$0\.42, 12s/);
+
+    // Finished, so the next slot runs again.
+    await sched.runDueTasks(start + 20 * MIN);
+    await settle();
+    assert.equal(events.length, 2);
+  } finally {
+    ws.close();
+  }
+});
+
+test('a silent task for an offline agent fails that run instead of queueing it', async () => {
+  const idle = await store.createAgent('Idle');
+  await store.setAgentSlack(idle.id, { teamId: TEAM, appId: 'A4', botToken: 'xoxb-idle' });
+  const start = Date.now() + 60 * MIN;
+  await post('/dashboard/scheduled', { agentId: idle.id, mode: 'prompt', interval: '5', runAt: String(start), text: 'hi' });
+  await sched.runDueTasks(start);
+  const [t] = await tasks();
+  assert.equal(t.last_error, 'agent_offline');
+  assert.equal(Number(t.enabled), 1); // tries again next slot
+  const { events } = await connectAgent(idle).then(async (c) => { await settle(); c.ws.close(); return c; });
+  assert.equal(events.length, 0); // nothing was waiting for it
 });

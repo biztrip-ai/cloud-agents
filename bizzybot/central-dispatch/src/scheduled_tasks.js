@@ -1,17 +1,24 @@
-// Scheduled tasks: a message posted to a Slack channel on a schedule, as one of
-// the signed-in workspace's agent bots. Once, or every 5/10/15/30/60 minutes.
+// Scheduled tasks: once, or every 5/10/15/30/60 minutes, one of the signed-in
+// workspace's agents either
 //
-// Managed at /dashboard/scheduled. A loop here posts whatever is due. A task
-// that mentions an agent wakes it like any bot mention would, so `@handle`s in
-// the text are turned into real <@U…> mentions when the task is saved: Slack
-// treats a bot's plain-text "@name" as text, not a mention.
+//   - posts a message to a Slack channel (mode 'post'). A task that mentions
+//     an agent wakes it like any bot mention would, so `@handle`s in the text
+//     are turned into real <@U…> mentions when the task is saved: Slack treats
+//     a bot's plain-text "@name" as text, not a mention; or
+//   - is prompted silently (mode 'prompt'). The prompt goes to the agent as a
+//     `scheduled_prompt` event on its queue, nothing is posted, and the agent's
+//     bridge reports the reply, cost and duration back (POST /api/task-result)
+//     for the task's card. See agent-wrapper/…/scheduled.py.
+//
+// Managed at /dashboard/scheduled. A loop here runs whatever is due.
 import crypto from 'node:crypto';
 import express from 'express';
 import { config } from './config.js';
 import { get, all, run, isPg } from './db.js';
 import { getSession } from './session.js';
-import { listAgentsByTeam, getAgentById } from './store.js';
+import { listAgentsByTeam, getAgentById, getAgentByToken, appendEvent } from './store.js';
 import { postSlackMessage, botChannels, workspaceUsers, userName } from './slack.js';
+import { onlineIds, pushEvent } from './wsHub.js';
 
 const TASKS = isPg ? `${config.dbSchema}.scheduled_tasks` : 'scheduled_tasks';
 
@@ -19,6 +26,9 @@ export const INTERVALS = [5, 10, 15, 30, 60]; // minutes; 0 means once
 const MIN = 60 * 1000;
 const TICK_MS = 30 * 1000;
 const MAX_TEXT = 4000;
+// A silent run that hasn't reported back within this long is taken as lost
+// (the agent restarted mid-run, say), and the next run may start.
+const RUN_TIMEOUT_MS = 60 * MIN;
 // Slack errors that won't fix themselves: the task is paused rather than
 // retried every interval. Anything else (rate limits, outages) just retries.
 const FATAL = new Set([
@@ -45,6 +55,22 @@ export async function initScheduledTasksTable() {
       last_ts       TEXT,
       last_error    TEXT
     )`);
+  // Silent prompts (added after the table first shipped).
+  const cols = {
+    mode: `TEXT NOT NULL DEFAULT 'post'`,
+    run_id: 'TEXT',
+    running_since: big,
+    last_result: 'TEXT',
+    last_cost_usd: isPg ? 'DOUBLE PRECISION' : 'REAL',
+    last_duration_ms: big,
+  };
+  const have = isPg
+    ? null
+    : new Set((await all(`PRAGMA table_info(${TASKS})`)).map((c) => c.name));
+  for (const [name, type] of Object.entries(cols)) {
+    if (isPg) await run(`ALTER TABLE ${TASKS} ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+    else if (!have.has(name)) await run(`ALTER TABLE ${TASKS} ADD COLUMN ${name} ${type}`);
+  }
 }
 
 // --- Pure helpers (exported for tests) ---------------------------------------
@@ -95,7 +121,7 @@ export function displayMentions(text, users) {
 // --- Posting -------------------------------------------------------------------
 
 // Post one task now. Resolves to { ok, ts } or { ok: false, error }.
-async function sendTask(task) {
+async function postTask(task) {
   const agent = await getAgentById(task.agent_id);
   if (!agent?.slack_bot_token) return { ok: false, error: 'agent_missing' };
   try {
@@ -117,6 +143,33 @@ async function recordResult(task, result, t) {
   }
 }
 
+// Hand a silent task's prompt to its agent. Skipped while the previous run is
+// still going; an offline agent is a failed run rather than a queued one, so
+// a backlog can't build up and replay when it reconnects.
+async function promptTask(task, now) {
+  const agent = await getAgentById(task.agent_id);
+  if (!agent) return recordResult(task, { ok: false, error: 'agent_missing' }, now);
+  const since = Number(task.running_since) || 0;
+  if (since && now - since < RUN_TIMEOUT_MS) {
+    console.log(`[scheduled] task ${task.id}: previous run still going; skipped`);
+    return;
+  }
+  if (!onlineIds().has(agent.id)) return recordResult(task, { ok: false, error: 'agent_offline' }, now);
+  const runId = crypto.randomUUID();
+  await run(
+    `UPDATE ${TASKS} SET run_id = ?, running_since = ?, last_run_at = ?, last_error = NULL, last_ts = NULL
+      WHERE id = ?`,
+    [runId, now, now, task.id],
+  );
+  const ev = await appendEvent(agent.id, 'scheduled_prompt', { task_id: task.id, run_id: runId, text: task.text });
+  pushEvent(agent.id, ev);
+}
+
+async function deliver(task, now) {
+  if (task.mode === 'prompt') return promptTask(task, now);
+  return recordResult(task, await postTask(task), now);
+}
+
 // Post every task that is due. Each one is claimed first by moving its
 // next_run_at (or switching a one-off task off) with a conditional UPDATE, so
 // a slow tick, an overlapping tick or a second instance can't post it twice.
@@ -134,7 +187,7 @@ export async function runDueTasks(now = Date.now()) {
       : await run(`UPDATE ${TASKS} SET enabled = 0 WHERE id = ? AND enabled = 1 AND next_run_at = ?`,
         [task.id, was]);
     if (!claim.changes) continue;
-    await recordResult(task, await sendTask(task), now);
+    await deliver(task, now);
   }
 }
 
@@ -176,30 +229,35 @@ function escapeHtml(s) {
 const scheduleLabel = (iv) => (iv ? `every ${iv} min` : 'once');
 
 const ERRORS = {
-  agent: 'Pick a bot to post as.',
+  agent: 'Pick an agent.',
   channel: 'Pick a channel the bot is in.',
   text: `Write a message (up to ${MAX_TEXT} characters).`,
   interval: 'Pick a schedule.',
   when: 'A one-time task needs a time in the future.',
   slack: 'Slack didn’t answer. Try again in a moment.',
+  scope: 'That bot’s Slack app is missing a permission. Reinstall it from the dashboard, then try again.',
 };
 
 // The workspace's agents that can post (installed, with a bot token), each
 // with the channels it is a member of. A bot whose lists fail to load is
-// still shown, with no channels, and the error.
+// still shown, with no channels, and the error. `missingScopes` are channel
+// permissions its install predates; reinstalling the app grants them.
 async function postingAgents(teamId) {
   const out = [];
   for (const a of await listAgentsByTeam(teamId)) {
     const full = await getAgentById(a.id);
     if (!full?.slack_bot_token) continue;
     let channels = [];
+    let missingScopes = [];
     let error = null;
     try {
-      channels = (await botChannels(full.slack_bot_token)).filter((c) => c.isMember);
+      const r = await botChannels(full.slack_bot_token);
+      channels = r.channels.filter((c) => c.isMember);
+      missingScopes = r.missingScopes;
     } catch (e) {
       error = e.message;
     }
-    out.push({ id: a.id, name: a.name, token: full.slack_bot_token, channels, error });
+    out.push({ id: a.id, name: a.name, token: full.slack_bot_token, channels, missingScopes, error });
   }
   return out;
 }
@@ -254,19 +312,30 @@ scheduledRouter.get('/dashboard/scheduled', h(async (req, res) => {
     const state = on
       ? `next ${time(t.next_run_at)}`
       : sent ? 'sent' : '<span style="color:#a60">paused</span>';
-    const last = t.last_run_at
-      ? `last ${time(t.last_run_at)} ${t.last_error
-        ? `<span style="color:#a11">✗ ${escapeHtml(t.last_error)}</span>`
-        : '<span style="color:#161">✓</span>'}`
-      : 'not run yet';
+    const silent = t.mode === 'prompt';
+    const running = silent && Number(t.running_since) && Date.now() - Number(t.running_since) < RUN_TIMEOUT_MS;
+    const outcome = t.last_error
+      ? `<span style="color:#a11">✗ ${escapeHtml(t.last_error)}</span>`
+      : running ? '<span style="color:#666">running…</span>' : '<span style="color:#161">✓</span>';
+    const stats = silent && !running && t.last_cost_usd != null
+      ? ` · $${Number(t.last_cost_usd).toFixed(2)}${t.last_duration_ms ? `, ${Math.round(Number(t.last_duration_ms) / 1000)}s` : ''}`
+      : '';
+    const last = t.last_run_at ? `last ${time(t.last_run_at)} ${outcome}${stats}` : 'not run yet';
+    const target = silent
+      ? '<span style="color:#666">· silent prompt</span>'
+      : `→ <b>#${escapeHtml(t.channel_name || t.channel_id)}</b>`;
+    const reply = silent && !running && t.last_result
+      ? `<details style="margin:0 0 6px;font-size:13px"><summary style="cursor:pointer;color:#4A154B">last reply</summary>
+          <div style="white-space:pre-wrap;border-left:3px solid #e5e5e5;padding:4px 10px;margin-top:4px">${escapeHtml(t.last_result)}</div></details>`
+      : '';
     rows.push(`<div style="${cardStyle}">
       <p style="margin:0 0 6px"><b>${escapeHtml(agentName.get(t.agent_id) || 'missing bot')}</b>
-        → <b>#${escapeHtml(t.channel_name || t.channel_id)}</b>
-        · ${scheduleLabel(iv)} · ${state}</p>
-      <div style="white-space:pre-wrap;background:#f6f6f6;border-radius:6px;padding:8px 10px;margin:0 0 6px">${escapeHtml(displayMentions(t.text, users))}</div>
+        ${target} · ${scheduleLabel(iv)} · ${state}</p>
+      <div style="white-space:pre-wrap;background:#f6f6f6;border-radius:6px;padding:8px 10px;margin:0 0 6px">${escapeHtml(silent ? t.text : displayMentions(t.text, users))}</div>
       <p style="margin:0 0 6px;font-size:13px;color:#666">${last} · added by ${escapeHtml(await personName(t.created_by))}</p>
+      ${reply}
       <div style="font-size:13px">
-        ${action(t, 'send-now', 'send now')}
+        ${action(t, 'send-now', silent ? 'run now' : 'send now')}
         ${sent ? '' : action(t, 'toggle', on ? 'pause' : 'resume')}
         ${action(t, 'delete', 'delete', '#a11')}
       </div>
@@ -283,21 +352,37 @@ scheduledRouter.get('/dashboard/scheduled', h(async (req, res) => {
       || `<option value="">${a.error ? `couldn't list channels: ${escapeHtml(a.error)}` : 'not in any channel yet'}</option>`}
     </select>`)
     .join('');
+  // Shown under the channel list for a bot whose Slack install is missing a
+  // channel permission.
+  const scopeNotes = agents
+    .filter((a) => a.missingScopes.length)
+    .map((a) => `<p data-agent-note="${escapeHtml(a.id)}" style="display:none;margin:4px 0 0;color:#a60;font-size:13px">
+      ${escapeHtml(a.name)}'s Slack app is missing ${escapeHtml(a.missingScopes.join(', '))}, so
+      ${a.missingScopes.length > 1 ? 'no channels' : a.missingScopes.join('').includes('groups') ? 'private channels' : 'public channels'}
+      can’t be listed. <a href="/dashboard">Reinstall it from the dashboard</a> to fix this.</p>`)
+    .join('');
   const intervalOptions = [0, ...INTERVALS]
     .map((iv) => `<option value="${iv}">${iv ? `Every ${iv} minutes` : 'Once'}</option>`)
     .join('');
 
   const form = agents.length
     ? `<form id="new" method="post" action="/dashboard/scheduled" style="${cardStyle};display:flex;flex-direction:column;gap:10px;font-size:14px">
-  <label>Post as<br><select name="agentId" id="agent" style="${fieldStyle};width:100%">${agentOptions}</select></label>
-  <label>Channel <span style="color:#999">— only channels the bot is in; /invite it to add one</span><br>${channelSelects}</label>
-  <label>Message <span style="color:#999">— @name mentions a person or agent</span><br>
+  <label>Agent<br><select name="agentId" id="agent" style="${fieldStyle};width:100%">${agentOptions}</select></label>
+  <div>
+    <label style="display:block"><input type="radio" name="mode" value="post" checked> Post a message in a channel, as this agent</label>
+    <label style="display:block"><input type="radio" name="mode" value="prompt"> Prompt this agent silently <span style="color:#999">— nothing is posted; its reply shows on the task below</span></label>
+  </div>
+  <div id="postFields">
+  <label>Channel <span style="color:#999">— only channels the bot is in; /invite it to add one</span><br>${channelSelects}</label>${scopeNotes}
+  </div>
+  <label><span id="textLabel">Message <span style="color:#999">— @name mentions a person or agent</span></span><br>
     <textarea name="text" rows="3" maxlength="${MAX_TEXT}" required style="${fieldStyle};width:100%;box-sizing:border-box;font-family:inherit"></textarea></label>
   <div style="display:flex;gap:10px;flex-wrap:wrap">
     <label>Schedule<br><select name="interval" id="interval" style="${fieldStyle}">${intervalOptions}</select></label>
     <label><span id="whenLabel">At</span><br><input type="datetime-local" id="when" style="${fieldStyle}"></label>
   </div>
   <p id="whenHint" style="margin:0;color:#666;font-size:13px"></p>
+  <p id="costHint" style="display:none;margin:0;color:#a60;font-size:13px">Each run is a full agent turn in a fresh conversation, and can cost a dollar or more if the agent does a lot. Check the cost on the task after its first run before choosing a short interval.</p>
   <input type="hidden" name="runAt" id="runAt">
   <div><button type="submit" style="${btnStyle}">Add scheduled task</button></div>
 </form>`
@@ -310,7 +395,7 @@ scheduledRouter.get('/dashboard/scheduled', h(async (req, res) => {
 <body style="font-family:system-ui;max-width:680px;margin:40px auto;padding:0 16px;line-height:1.5">
 <p style="color:#666"><a href="/dashboard">← dashboard</a> · Signed in as ${escapeHtml(sess.name || 'you')}</p>
 <h1>⏰ Scheduled tasks</h1>
-<p style="color:#666">Post a message to a channel in ${escapeHtml(sess.teamName || 'this workspace')} as one of its agents, once or on a repeating schedule. Mentioning an agent wakes it.</p>
+<p style="color:#666">Once or on a repeating schedule, have one of ${escapeHtml(sess.teamName || 'this workspace')}'s agents post a message to a channel (mentioning an agent wakes it), or prompt an agent silently without posting anything.</p>
 ${err ? `<p style="background:#fdeaea;color:#a11;border:1px solid #f3caca;border-radius:6px;padding:8px 12px">${escapeHtml(err)}</p>` : ''}
 ${form}
 <h3>Tasks</h3>
@@ -330,19 +415,34 @@ if (form) {
       s.disabled = !mine;
       s.style.display = mine ? '' : 'none';
     });
+    document.querySelectorAll('[data-agent-note]').forEach(function (p) {
+      p.style.display = p.dataset.agentNote === agent.value ? '' : 'none';
+    });
   };
   var showWhen = function () {
     var once = interval.value === '0';
     document.getElementById('whenLabel').textContent = once ? 'At' : 'Starting';
     when.required = once;
     document.getElementById('whenHint').textContent = once
-      ? 'Posted once at this time.'
-      : 'Leave blank to start one interval from now. Use "send now" on the task to post right away.';
+      ? 'Runs once at this time.'
+      : 'Leave blank to start one interval from now. Use "send now" / "run now" on the task to go right away.';
   };
-  agent.addEventListener('change', showChannels);
+  var showMode = function () {
+    var silent = form.querySelector('input[name=mode]:checked').value === 'prompt';
+    document.getElementById('postFields').style.display = silent ? 'none' : '';
+    document.getElementById('costHint').style.display = silent ? '' : 'none';
+    document.getElementById('textLabel').textContent = silent ? 'Prompt' : 'Message — @name mentions a person or agent';
+    // A silent task has no channel: don't submit (or require) one.
+    document.querySelectorAll('select[data-agent]').forEach(function (s) {
+      s.disabled = silent || s.dataset.agent !== agent.value;
+    });
+  };
+  agent.addEventListener('change', function () { showChannels(); showMode(); });
   interval.addEventListener('change', showWhen);
+  form.querySelectorAll('input[name=mode]').forEach(function (r) { r.addEventListener('change', showMode); });
   showChannels();
   showWhen();
+  showMode();
   form.addEventListener('submit', function () {
     document.getElementById('runAt').value = when.value ? String(new Date(when.value).getTime()) : '';
   });
@@ -365,15 +465,26 @@ scheduledRouter.post('/dashboard/scheduled', h(async (req, res) => {
   const now = Date.now();
   const runAt = Number(req.body?.runAt) || 0;
   if (!iv && runAt < now - MIN) return fail('when');
+  const firstRun = iv ? (runAt > now ? runAt : now + iv * MIN) : Math.max(runAt, now);
+
+  if (req.body?.mode === 'prompt') {
+    await run(
+      `INSERT INTO ${TASKS} (id, team_id, agent_id, channel_id, text, interval_min,
+                             next_run_at, enabled, created_by, created_at, mode)
+       VALUES (?, ?, ?, '', ?, ?, ?, 1, ?, ?, 'prompt')`,
+      [crypto.randomUUID(), sess.teamId, agent.id, text, iv, firstRun, sess.userId || null, now],
+    );
+    return res.redirect('/dashboard/scheduled');
+  }
 
   let ch;
   let users;
   try {
-    ch = (await botChannels(agent.slack_bot_token)).find((c) => c.id === channel && c.isMember);
+    ch = (await botChannels(agent.slack_bot_token)).channels.find((c) => c.id === channel && c.isMember);
     users = await workspaceUsers(agent.slack_bot_token);
   } catch (e) {
     console.warn('[scheduled] Slack lookup failed:', e.message);
-    return fail('slack');
+    return fail(e.slackError === 'missing_scope' ? 'scope' : 'slack');
   }
   if (!ch) return fail('channel');
 
@@ -383,19 +494,18 @@ scheduledRouter.post('/dashboard/scheduled', h(async (req, res) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     [
       crypto.randomUUID(), sess.teamId, agent.id, ch.id, ch.name, resolveMentions(text, users), iv,
-      iv ? (runAt > now ? runAt : now + iv * MIN) : Math.max(runAt, now),
-      sess.userId || null, now,
+      firstRun, sess.userId || null, now,
     ],
   );
   res.redirect('/dashboard/scheduled');
 }));
 
-// Post now, off schedule. The schedule itself is left as it was.
+// Post (or prompt) now, off schedule. The schedule itself is left as it was.
 scheduledRouter.post('/dashboard/scheduled/:id/send-now', h(async (req, res) => {
   const { sess, task } = await ownTask(req);
   if (!sess) return res.redirect('/login');
   if (!task) return res.status(404).send('not found');
-  await recordResult(task, await sendTask(task), Date.now());
+  await deliver(task, Date.now());
   res.redirect('/dashboard/scheduled');
 }));
 
@@ -421,4 +531,28 @@ scheduledRouter.post('/dashboard/scheduled/:id/delete', h(async (req, res) => {
   if (!task) return res.status(404).send('not found');
   await run(`DELETE FROM ${TASKS} WHERE id = ?`, [task.id]);
   res.redirect('/dashboard/scheduled');
+}));
+
+// Agent bridge → how a silent run went. Authenticated by the agent's
+// registration token; only the task's own agent may report, and only for the
+// run it was handed (a late report for an older run is ignored).
+scheduledRouter.post('/api/task-result', h(async (req, res) => {
+  const b = req.body || {};
+  const agent = b.token ? await getAgentByToken(String(b.token)) : null;
+  if (!agent) return res.status(401).json({ error: 'invalid_token' });
+  const task = b.task_id ? await get(`SELECT * FROM ${TASKS} WHERE id = ?`, [String(b.task_id)]) : null;
+  if (!task || task.agent_id !== agent.id) return res.status(404).json({ error: 'not_found' });
+  const num = (v) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : null);
+  const r = await run(
+    `UPDATE ${TASKS} SET running_since = NULL, last_result = ?, last_cost_usd = ?, last_duration_ms = ?,
+                         last_error = ?
+      WHERE id = ? AND run_id = ?`,
+    [
+      String(b.text || '').slice(0, MAX_TEXT), num(b.cost_usd), num(b.duration_ms),
+      b.ok === false ? String(b.error || 'failed').slice(0, 500) : null,
+      task.id, String(b.run_id || ''),
+    ],
+  );
+  if (!r.changes) return res.status(409).json({ error: 'stale_run' });
+  res.json({ ok: true });
 }));

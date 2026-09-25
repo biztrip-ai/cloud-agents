@@ -44,6 +44,7 @@ from . import (
     passive,
     pr_poller,
     private_dm,
+    scheduled,
     sentry_poller,
     shell_exec,
     slack_tools,
@@ -1928,15 +1929,28 @@ async def main() -> None:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
 
+        # A silent scheduled task's outcome, for its dashboard card. ws_token is
+        # this agent's registration token, which authenticates us.
+        async def report_task_result(result: dict[str, Any]) -> None:
+            async with http.post(
+                f"{central_dispatch}/api/task-result",
+                json={"token": ws_token, **result},
+                ssl=_insecure_tls_ctx(central_dispatch),
+            ) as resp:
+                resp.raise_for_status()
+
         async def on_event(event: Any) -> None:
             # Central wraps each event as {type, payload}. Slack events go through
-            # the normal dispatch; 'email' events (see docs/EMAIL.md) are handled
-            # directly. Default to slack for anything untyped (back-compat).
+            # the normal dispatch; 'email' events (see docs/EMAIL.md) and
+            # 'scheduled_prompt' events (see scheduled.py) are handled directly.
+            # Default to slack for anything untyped (back-compat).
             event = event or {}
             etype = event.get("type")
             payload = event.get("payload")
             if etype == "email":
                 await handle_email_event(payload, sessions, slack)
+            elif etype == "scheduled_prompt":
+                await scheduled.run_scheduled_prompt(payload, sessions, report_task_result)
             else:
                 await dispatch_event(payload, sessions, slack)
 
