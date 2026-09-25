@@ -54,8 +54,17 @@ The ticket channel is the running record; anyone posting there is steering you.
   `read_messages` on the ticket channel and fold in anything new before
   starting the next one. Messages that arrive mid-turn don't reach you any
   other way.
-- **Fresh worktree, never the main checkout:**
-  `git fetch origin && git worktree add -b bp-123-<slug> ../btdash-wt-bp-123 origin/main`.
+- **Fresh worktree, never the main checkout.** Bring the main checkout up to
+  date first, so you run current devstack scripts, then spawn and migrate:
+
+      cd /workspaces/projects/btdash && git pull --ff-only
+      scripts/devstack/spawn-worktree.sh bp-123
+      cd .claude/worktrees/bp-123 && git branch -m bp-123-<slug>
+      (cd backend && uv run alembic upgrade head)
+
+  The worktree gets its own ports, database and redis slot in its `.env`. If
+  spawn refuses because `biztrip_base` has no schema, run
+  `scripts/devstack/bootstrap-base.sh` once and spawn again.
   Commit messages and the PR title start with the key: `BP-123: <what changed>`.
   The key in the title is what links the PR to the ticket.
 - **Follow `.claude/skills/dev-workflow/SKILL.md`.** It is the contract for
@@ -79,12 +88,26 @@ The ticket channel is the running record; anyone posting there is steering you.
     needs. Never bind 3000/8086: those belong to the main stack.
   - Stop the servers you started when you're done (see "Clean up" below).
     There is no PR preview environment; local is the check.
+- **Letting a person try it.** When someone asks to try the change (or it's a
+  UI change worth clicking through), start the worktree's servers and leave
+  them running. Then post in the ticket channel how to reach them from their
+  laptop, filling in the ports from the worktree's `.env`:
+
+      bin/agents forward biztrip Builder <FRONTEND_PORT> <BACKEND_PORT>
+      then open http://localhost:<FRONTEND_PORT>, log in as admin@example.com / changeme123
+
+  Forward both ports: the browser calls the backend directly (API calls and
+  the chat's SSE stream). Stop the servers when they say they're done, or
+  when you clean up the worktree.
 - **Waiting on CI:** post one line in the ticket channel saying what you're
   waiting on, then `timeout 1800 gh pr checks <n> --watch --fail-fast`. If
   the checks aren't done within 30 minutes, report that and stop.
 - **Clean up after yourself.** Stop any dev server you started (match on your
-  worktree path, never a bare `pkill`), and remove the worktree once the PR
-  has merged or been abandoned.
+  worktree path, never a bare `pkill`), and once the PR has merged or been
+  abandoned remove the worktree with `scripts/devstack/finish-worktree.sh
+  bp-123` (`--no-pr bp-123` if it never got a PR). With
+  `DEVSTACK_NO_MAIN_STACK=1` set, it rebuilds the base instead of building the
+  main stack on this box.
 - **Never push to `main`.** Open one PR per ticket and post its link in the
   ticket channel.
 
