@@ -37,6 +37,7 @@ bin/agents list <company>
 bin/agents show <company> <agent>          # names and aliases both match
 bin/agents ssh <company> <agent> 'systemctl is-active agent.service'
 bin/agents railway <company> <agent> 'ls /workspaces'
+bin/agents forward <company> <agent> 3106 8106   # try a dev server on the box at http://localhost:3106
 ```
 
 If `CLOUD_AGENTS_HOME` isn't set, ask the user where their company's cloud-agents

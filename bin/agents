@@ -12,6 +12,10 @@ duration of an `ssh` call.
   bin/agents list    <company>                  table of agents
   bin/agents show    <company> <agent>          one agent (private key masked)
   bin/agents ssh     <company> <agent> [cmd…]   SSH in (uses the stored key if any)
+  bin/agents forward <company> <agent> <port>[:<remote>]…
+                                                forward local ports to the agent's box
+                                                over SSH (e.g. to try a dev server it
+                                                runs); stays up until Ctrl-C
   bin/agents railway <company> <agent> [cmd…]   `railway ssh` into a Railway agent
   bin/agents upsert  <company> < entry.json     add/replace an agent (matched by name)
   bin/agents set     <company> <agent> <dotted.path> <json-value>
@@ -87,10 +91,12 @@ def cmd_list(company):
         print("  ".join(str(c).ljust(w[i]) for i, c in enumerate(r)))
 
 
-def cmd_ssh(company, name, *cmd):
+def _ssh(company, name, opts, cmd):
+    """Run ssh to the agent's box with its stored key: `opts` go before the
+    host, `cmd` (the remote command) after it."""
     a = find(load(company), name)
     s = a.get("ssh") or sys.exit(f"{name} has no ssh block (Railway? use `railway`)")
-    args = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-p", str(s.get("port", 22))]
+    args = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-p", str(s.get("port", 22)), *opts]
     priv = (s.get("key") or {}).get("private")
     tmp = None
     try:
@@ -105,6 +111,31 @@ def cmd_ssh(company, name, *cmd):
     finally:
         if tmp:
             os.unlink(tmp)
+
+
+def cmd_ssh(company, name, *cmd):
+    return _ssh(company, name, [], cmd)
+
+
+def cmd_forward(company, name, *ports):
+    """Forward localhost:<port> to the box's localhost:<remote> (default: the
+    same port). Same numbers on both ends keep an app's own localhost URLs
+    (auth callbacks, API base URLs, SSE endpoints) working in the browser.
+    Plain TCP over SSH, so streaming responses pass through untouched."""
+    if not ports:
+        sys.exit("usage: bin/agents forward <company> <agent> <port>[:<remote>]…")
+    opts = ["-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30"]
+    for p in ports:
+        local, _, remote = p.partition(":")
+        if not local.isdigit() or (remote and not remote.isdigit()):
+            sys.exit(f"bad port {p!r}: want <port> or <local>:<remote>")
+        opts += ["-L", f"{local}:localhost:{remote or local}"]
+        print(f"http://localhost:{local}  ->  {name}:{remote or local}", file=sys.stderr)
+    print("forwarding; Ctrl-C to stop", file=sys.stderr)
+    try:
+        return _ssh(company, name, opts, [])
+    except KeyboardInterrupt:
+        return 0
 
 
 def cmd_railway(company, name, *cmd):
@@ -170,6 +201,8 @@ def main(argv):
         print(json.dumps(masked(find(load(company), rest[0])), indent=2))
     elif cmd == "ssh":
         sys.exit(cmd_ssh(company, *rest))
+    elif cmd == "forward":
+        sys.exit(cmd_forward(company, *rest))
     elif cmd == "railway":
         sys.exit(cmd_railway(company, *rest))
     elif cmd == "upsert":
