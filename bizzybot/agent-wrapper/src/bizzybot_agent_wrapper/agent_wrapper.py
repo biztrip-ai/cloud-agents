@@ -557,12 +557,12 @@ async def bot_participates_in_thread(
 
 # --- Agent-to-agent mentions -------------------------------------------------
 #
-# Messages from other bots are normally ignored. A multi-agent setup (e.g. a
-# PM agent handing work to a builder agent) needs one agent's @-mention to wake
-# another, so AGENT_MENTIONS_FROM lists the senders allowed through — Slack user
-# ids (U…), app ids (A…) or bot ids (B…), comma-separated. Such a message only
-# wakes this agent if it @-mentions it. AGENT_CHAIN_LIMIT caps how many turns in
-# a row other agents can trigger before a human speaks again: the loop guard.
+# A message from another bot (another agent, a scheduled post, an integration)
+# wakes this agent only if it @-mentions it. By default any bot may do that;
+# set AGENT_MENTIONS_FROM to restrict it to the listed senders — Slack user
+# ids (U…), app ids (A…) or bot ids (B…), comma-separated. AGENT_CHAIN_LIMIT
+# caps how many turns in a row bots can trigger before a human speaks again:
+# the loop guard.
 
 
 def _agent_allowlist() -> frozenset[str]:
@@ -572,7 +572,7 @@ def _agent_allowlist() -> frozenset[str]:
 
 def _is_allowed_agent(event: dict[str, Any], allow: frozenset[str]) -> bool:
     if not allow:
-        return False
+        return True  # unset: any bot may @-mention this agent
     ids = {event.get("user"), event.get("app_id"), event.get("bot_id"),
            (event.get("bot_profile") or {}).get("app_id")}
     return bool(ids & allow)
@@ -638,8 +638,9 @@ def _first_sighting(key: str) -> bool:
 def normalize_agent_event(
     event: dict[str, Any], bot_user_id: Optional[str], allow: frozenset[str]
 ) -> Optional[dict[str, Any]]:
-    """A message from an allowlisted agent that @-mentions this agent, as a
-    payload for handle_user_message (tagged from_agent), or None."""
+    """A message from another bot (allowlisted, if AGENT_MENTIONS_FROM is set)
+    that @-mentions this agent, as a payload for handle_user_message (tagged
+    from_agent), or None."""
     if not bot_user_id or event.get("user") == bot_user_id:
         return None  # never wake on our own messages
     if not _is_allowed_agent(event, allow):
