@@ -38,6 +38,7 @@ const USERS = [
 const CHANNELS = [
   { id: 'C_brain', name: 'braincenter', is_member: true },
   { id: 'C_other', name: 'random', is_member: false },
+  { id: 'C_secret', name: 'secret', is_member: true, is_private: true },
 ];
 let posts = [];
 let postError = null;
@@ -47,7 +48,15 @@ globalThis.fetch = async (url, opts = {}) => {
   if (u.host !== 'slack.com') return realFetch(url, opts);
   const reply = (body) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
   switch (u.pathname) {
-    case '/api/conversations.list': return reply({ ok: true, channels: CHANNELS });
+    case '/api/conversations.list': {
+      // An app installed before groups:read was added can't list private channels.
+      const old = opts.headers?.Authorization === 'Bearer xoxb-old';
+      if (old && u.searchParams.get('types').includes('private_channel')) {
+        return reply({ ok: false, error: 'missing_scope', needed: 'groups:read' });
+      }
+      const types = u.searchParams.get('types').split(',');
+      return reply({ ok: true, channels: CHANNELS.filter((c) => types.includes(c.is_private ? 'private_channel' : 'public_channel')) });
+    }
     case '/api/users.list': return reply({ ok: true, members: USERS });
     case '/api/users.info': return reply({ ok: true, user: { real_name: 'Scott Persinger' } });
     case '/api/chat.postMessage': {
@@ -245,4 +254,15 @@ test('send now posts off schedule and leaves the schedule alone', async () => {
   const [t] = await tasks();
   assert.equal(Number(t.next_run_at), Number(before.next_run_at));
   assert.ok(t.last_run_at);
+});
+
+test('a bot missing a channel scope still lists what it can, and says how to fix it', async () => {
+  const old = await store.createAgent('Bizzy');
+  await store.setAgentSlack(old.id, { teamId: TEAM, appId: 'A2', botToken: 'xoxb-old' });
+  const page = await (await fetch(`${base}/dashboard/scheduled`, { headers: { Cookie: cookieFor('U0SCOTT') } })).text();
+  const bizzy = page.match(new RegExp(`<select name="channel" data-agent="${old.id}"[\\s\\S]*?</select>`))[0];
+  assert.match(bizzy, /#braincenter/); // public channels still listed
+  assert.doesNotMatch(bizzy, /secret/);
+  assert.match(page, /Bizzy's Slack app is missing groups:read, so\s+private channels\s+can’t be listed/);
+  assert.match(page, /#braincenter[\s\S]*🔒secret/); // BzPM, with every scope, sees both
 });

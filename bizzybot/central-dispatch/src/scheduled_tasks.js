@@ -182,24 +182,29 @@ const ERRORS = {
   interval: 'Pick a schedule.',
   when: 'A one-time task needs a time in the future.',
   slack: 'Slack didn’t answer. Try again in a moment.',
+  scope: 'That bot’s Slack app is missing a permission. Reinstall it from the dashboard, then try again.',
 };
 
 // The workspace's agents that can post (installed, with a bot token), each
 // with the channels it is a member of. A bot whose lists fail to load is
-// still shown, with no channels, and the error.
+// still shown, with no channels, and the error. `missingScopes` are channel
+// permissions its install predates; reinstalling the app grants them.
 async function postingAgents(teamId) {
   const out = [];
   for (const a of await listAgentsByTeam(teamId)) {
     const full = await getAgentById(a.id);
     if (!full?.slack_bot_token) continue;
     let channels = [];
+    let missingScopes = [];
     let error = null;
     try {
-      channels = (await botChannels(full.slack_bot_token)).filter((c) => c.isMember);
+      const r = await botChannels(full.slack_bot_token);
+      channels = r.channels.filter((c) => c.isMember);
+      missingScopes = r.missingScopes;
     } catch (e) {
       error = e.message;
     }
-    out.push({ id: a.id, name: a.name, token: full.slack_bot_token, channels, error });
+    out.push({ id: a.id, name: a.name, token: full.slack_bot_token, channels, missingScopes, error });
   }
   return out;
 }
@@ -283,6 +288,15 @@ scheduledRouter.get('/dashboard/scheduled', h(async (req, res) => {
       || `<option value="">${a.error ? `couldn't list channels: ${escapeHtml(a.error)}` : 'not in any channel yet'}</option>`}
     </select>`)
     .join('');
+  // Shown under the channel list for a bot whose Slack install is missing a
+  // channel permission.
+  const scopeNotes = agents
+    .filter((a) => a.missingScopes.length)
+    .map((a) => `<p data-agent-note="${escapeHtml(a.id)}" style="display:none;margin:4px 0 0;color:#a60;font-size:13px">
+      ${escapeHtml(a.name)}'s Slack app is missing ${escapeHtml(a.missingScopes.join(', '))}, so
+      ${a.missingScopes.length > 1 ? 'no channels' : a.missingScopes.join('').includes('groups') ? 'private channels' : 'public channels'}
+      can’t be listed. <a href="/dashboard">Reinstall it from the dashboard</a> to fix this.</p>`)
+    .join('');
   const intervalOptions = [0, ...INTERVALS]
     .map((iv) => `<option value="${iv}">${iv ? `Every ${iv} minutes` : 'Once'}</option>`)
     .join('');
@@ -290,7 +304,7 @@ scheduledRouter.get('/dashboard/scheduled', h(async (req, res) => {
   const form = agents.length
     ? `<form id="new" method="post" action="/dashboard/scheduled" style="${cardStyle};display:flex;flex-direction:column;gap:10px;font-size:14px">
   <label>Post as<br><select name="agentId" id="agent" style="${fieldStyle};width:100%">${agentOptions}</select></label>
-  <label>Channel <span style="color:#999">— only channels the bot is in; /invite it to add one</span><br>${channelSelects}</label>
+  <label>Channel <span style="color:#999">— only channels the bot is in; /invite it to add one</span><br>${channelSelects}</label>${scopeNotes}
   <label>Message <span style="color:#999">— @name mentions a person or agent</span><br>
     <textarea name="text" rows="3" maxlength="${MAX_TEXT}" required style="${fieldStyle};width:100%;box-sizing:border-box;font-family:inherit"></textarea></label>
   <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -329,6 +343,9 @@ if (form) {
       var mine = s.dataset.agent === agent.value;
       s.disabled = !mine;
       s.style.display = mine ? '' : 'none';
+    });
+    document.querySelectorAll('[data-agent-note]').forEach(function (p) {
+      p.style.display = p.dataset.agentNote === agent.value ? '' : 'none';
     });
   };
   var showWhen = function () {
@@ -369,11 +386,11 @@ scheduledRouter.post('/dashboard/scheduled', h(async (req, res) => {
   let ch;
   let users;
   try {
-    ch = (await botChannels(agent.slack_bot_token)).find((c) => c.id === channel && c.isMember);
+    ch = (await botChannels(agent.slack_bot_token)).channels.find((c) => c.id === channel && c.isMember);
     users = await workspaceUsers(agent.slack_bot_token);
   } catch (e) {
     console.warn('[scheduled] Slack lookup failed:', e.message);
-    return fail('slack');
+    return fail(e.slackError === 'missing_scope' ? 'scope' : 'slack');
   }
   if (!ch) return fail('channel');
 
