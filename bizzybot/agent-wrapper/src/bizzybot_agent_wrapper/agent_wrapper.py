@@ -60,6 +60,7 @@ from .slack_io import (
     SilentRenderer,
     SlackRenderer,
     download_slack_files,
+    footer_skip_channel,
     sender_line,
     user_label,
     tool_label,
@@ -796,7 +797,9 @@ async def handle_user_message(
     # A "working" line in each other channel this turn reports to with
     # post_message; see ChannelFooters. `posts` maps a pending post_message's
     # tool_use_id to its args until its result says where it landed.
-    footers = ChannelFooters(slack, skip_channel=channel, ledger=FOOTER_LEDGER)
+    footers = ChannelFooters(
+        slack, skip_channel=footer_skip_channel(channel, reply_ts), ledger=FOOTER_LEDGER
+    )
     posts: dict[str, dict] = {}
     full_text: list[str] = []
     # Whether any of the *thread's* agent's own words reached the message. It

@@ -298,8 +298,9 @@ class ChannelFooters:
     re-posted under each new report so it stays last, and deleted when the turn
     ends. It's an ordinary message; Slack has no status slot for apps.
 
-    The turn's own channel is skipped: the live reply is already there. Like
-    the renderer, nothing here may raise into the turn's stream consumer."""
+    `skip_channel` is the channel whose top level already shows the turn's
+    live reply (see footer_skip_channel). Like the renderer, nothing here may
+    raise into the turn's stream consumer."""
 
     def __init__(
         self,
@@ -369,6 +370,16 @@ class ChannelFooters:
             return
         if self._ledger:
             self._ledger.remove(channel, ts)
+
+
+def footer_skip_channel(channel: Optional[str], reply_thread_ts: Optional[str]) -> Optional[str]:
+    """The channel ChannelFooters should leave alone: the turn's own channel,
+    but only when the turn replies at its top level, where its live status is
+    in plain sight. A turn replying in a thread (an @-mention, say) shows its
+    status inside that thread, so a top-level report it posts into the same
+    channel needs a footer like any other: otherwise the channel looks idle
+    while the work goes on out of view."""
+    return None if reply_thread_ts else channel
 
 
 def posted_channel(post_args: dict, result: Optional[str]) -> Optional[str]:
