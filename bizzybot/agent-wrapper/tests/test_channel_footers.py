@@ -8,7 +8,12 @@ import asyncio
 import json
 
 from bizzybot_agent_wrapper import slack_io
-from bizzybot_agent_wrapper.slack_io import ChannelFooters, FooterLedger, posted_channel
+from bizzybot_agent_wrapper.slack_io import (
+    ChannelFooters,
+    FooterLedger,
+    footer_skip_channel,
+    posted_channel,
+)
 
 
 class FakeSlack:
@@ -111,3 +116,12 @@ def test_posted_channel_reads_the_tool_result():
     assert posted_channel({"channel": "C9", "thread_ts": "1.0"}, ok) is None
     assert posted_channel({"channel": "C9"}, "No channel #nope that the bot can see") is None
     assert posted_channel({"channel": "C9"}, None) is None
+
+
+def test_own_channel_skipped_only_when_the_turn_replies_at_top_level():
+    # A turn in a channel it owns replies at the top level: its live status is
+    # right there, so a report into that channel needs no footer.
+    assert footer_skip_channel("CBP91", None) == "CBP91"
+    # A turn started by an @-mention replies in that message's thread; its
+    # top-level reports in the same channel must get the footer.
+    assert footer_skip_channel("CBP91", "1790367413.923969") is None
