@@ -356,6 +356,7 @@ router.get('/dashboard', async (req, res) => {
   <a href="${REPO_URL}" target="_blank" rel="noopener" style="margin-left:auto;color:#4A154B;text-decoration:none;white-space:nowrap">GitHub ↗</a>
 </p>
 <h1>Slack workspace: ${escapeHtml(workspace)}</h1>
+<p><a href="/dashboard/scheduled">⏰ Scheduled tasks</a> — post messages to a channel on a schedule</p>
 ${errBanner}
 <p style="color:#666">${
     multi ? `Run up to ${apps.length} agents in this workspace — one per Slack app.` : ''

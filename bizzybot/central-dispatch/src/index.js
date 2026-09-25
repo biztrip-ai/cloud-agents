@@ -7,6 +7,7 @@ import { router } from './routes.js';
 import { dropboxRouter, initDropboxTable } from './dropbox.js';
 import { attachWsHub } from './wsHub.js';
 import { startEmailPoller } from './email_poller.js';
+import { scheduledRouter, initScheduledTasksTable, startScheduler } from './scheduled_tasks.js';
 import { ensureSelfSignedCert } from './cert.js';
 
 const app = express();
@@ -25,9 +26,11 @@ app.use(express.urlencoded({ extended: false }));
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use(router);
 app.use(dropboxRouter);
+app.use(scheduledRouter);
 
 await init(); // create tables / schema before serving
 await initDropboxTable();
+await initScheduledTasksTable();
 
 const server = config.tlsSelfSigned
   ? https.createServer(ensureSelfSignedCert(config.certDir), app)
@@ -36,6 +39,8 @@ attachWsHub(server);
 
 // Inbound-email poller (no-op until a workspace configures Mailgun; see docs/EMAIL.md).
 startEmailPoller();
+// Posts scheduled tasks when they're due (see scheduled_tasks.js).
+startScheduler();
 
 server.listen(config.port, () => {
   const scheme = config.tlsSelfSigned ? 'https' : 'http';

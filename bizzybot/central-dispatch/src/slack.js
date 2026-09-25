@@ -129,10 +129,10 @@ export async function exchangeCode(code, redirectUri, app = config.slack.primary
   return res.json();
 }
 
-// --- Web API helpers (for Central-Dispatch-side notices) -----------------------------
-// Central-Dispatch normally never talks to Slack — the agent does. The one exception is
-// posting an "agent offline" notice when no agent-wrapper is connected to handle a
-// message. These are deliberately tiny and best-effort.
+// --- Web API helpers (for Central-Dispatch-side posts) -------------------------------
+// Central-Dispatch mostly leaves Slack to the agents. The exceptions: the "agent
+// offline" notice when no agent-wrapper is connected to handle a message, and
+// scheduled tasks (scheduled_tasks.js). These are deliberately tiny.
 
 // Post a plain-text message to a channel/thread with the workspace bot token.
 export async function postSlackMessage({ token, channel, threadTs, text }) {
@@ -195,6 +195,54 @@ export async function userName(token, userId) {
   if (name) _userNameCache.set(key, name);
   return name;
 }
+
+// Page through a Slack list method (conversations.list, users.list), collecting
+// `key` from every page. Throws on a Slack error so callers don't cache a
+// partial list.
+async function listAll(token, method, params, key) {
+  const out = [];
+  let cursor = '';
+  do {
+    const qs = new URLSearchParams({ ...params, limit: '1000', ...(cursor ? { cursor } : {}) });
+    const res = await fetch(`https://slack.com/api/${method}?${qs}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(`${method}: ${data.error}`);
+    out.push(...(data[key] || []));
+    cursor = data.response_metadata?.next_cursor || '';
+  } while (cursor);
+  return out;
+}
+
+// Short per-token cache for the list helpers below: the scheduled-tasks page
+// reads them on every load, once per bot.
+function cached(ttlMs, load) {
+  const cache = new Map(); // token -> { at, value }
+  return async (token) => {
+    const hit = cache.get(token);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.value;
+    const value = await load(token);
+    cache.set(token, { at: Date.now(), value });
+    return value;
+  };
+}
+
+// Channels the bot can see, as { id, name, isPrivate, isMember }. A bot can
+// only post where it is a member.
+export const botChannels = cached(60_000, async (token) =>
+  (await listAll(token, 'conversations.list', {
+    types: 'public_channel,private_channel',
+    exclude_archived: 'true',
+  }, 'channels'))
+    .map((c) => ({ id: c.id, name: c.name, isPrivate: Boolean(c.is_private), isMember: Boolean(c.is_member) }))
+    .sort((a, b) => a.name.localeCompare(b.name)),
+);
+
+// The workspace's people and bots, for turning @handles into real mentions.
+export const workspaceUsers = cached(10 * 60_000, (token) =>
+  listAll(token, 'users.list', {}, 'members'),
+);
 
 // True iff the bot has posted at least one message in this thread. Lets us skip
 // unrelated threads when deciding whether an offline notice is warranted.

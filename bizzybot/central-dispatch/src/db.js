@@ -40,12 +40,14 @@ function toPg(sql) {
   return sql.replace(/\?/g, () => `$${++i}`);
 }
 
+// Resolves to { changes }: the number of rows written, so a conditional UPDATE
+// can tell whether it won.
 export async function run(sql, params = []) {
   if (usePg) {
-    await pool.query(toPg(sql), params);
-    return;
+    const r = await pool.query(toPg(sql), params);
+    return { changes: r.rowCount ?? 0 };
   }
-  sqlite.prepare(sql).run(...params);
+  return { changes: Number(sqlite.prepare(sql).run(...params).changes) };
 }
 
 export async function get(sql, params = []) {
