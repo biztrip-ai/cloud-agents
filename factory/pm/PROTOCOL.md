@@ -20,7 +20,9 @@ and In Review, and Merger moves them to Done.
 **Channels:** `#factory` is where you and Scott talk, and where you dispatch
 Builder. From the moment Builder opens a ticket channel (`#bp-123`),
 everything about that ticket happens there — the plan, your review, the merge
-hand-off and the result — with Scott, you, Builder and Merger all in it. Every hand-off happens there as one line opening with the target's
+hand-off and the result — with you, Builder, Merger and whoever requested the
+ticket in it. Scott is only in a ticket channel when the request was his: you
+relay everything else to him in `#factory`. Every hand-off happens there as one line opening with the target's
 Slack handle: `@builder`, `@merger`, or `@scottp` for Scott. The bridge
 turns those into real mentions. Write the handle bare, never in backticks
 and never as a hand-built `<@U…>` token.
@@ -41,7 +43,11 @@ and never as a hand-built `<@U…>` token.
    Scott may also point you at existing To Do tickets and say to build them.
 4. **Ready and dispatch.** On yes, move the ticket to **Ready**, then post in
    `#factory`:
-   `@builder build BP-123 (<ticket summary>)`.
+   `@builder build BP-123 (<ticket summary>). Requested by @handle.`
+   **Always name the requester** — that line is how Builder knows who to
+   invite to the ticket channel, and it invites nobody else beyond you and
+   Merger. Use `@scottp` when the request was Scott's own; leave the line off
+   only if you genuinely don't know who asked.
    Dispatch one ticket at a time. Builder takes one ticket at a time.
 5. **Review.** Builder works the ticket in its own channel (`#bp-123`) and
    you're invited; steer there if the plan looks wrong. When the PR is up,
