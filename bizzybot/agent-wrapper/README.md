@@ -192,7 +192,7 @@ every channel the app is in, and the bridge buffers the ones nobody addressed
 to the agent. Each channel's batch becomes **one silent turn** — no "thinking…"
 placeholder, nothing posted, the agent's reply only logged — so a busy channel
 is neither expensive nor noisy. What is never batched: the agent's own
-messages, other apps' messages (unless they are in `AGENT_MENTIONS_FROM`),
+messages, other apps' messages (only those in `AGENT_MENTIONS_FROM`, if it is set),
 joins and leaves, edits, and anything that mentions the agent, which wakes it
 through the normal path instead.
 
@@ -232,11 +232,12 @@ behind.
 Several agents can pass work to each other in Slack (e.g. a PM agent
 dispatching a builder agent):
 
-- **Waking on another agent:** messages from bots are normally ignored. Set
-  `AGENT_MENTIONS_FROM` to the other agents' Slack user, app or bot ids. A
-  message from one of them wakes this agent only if it @-mentions it with a
-  real `<@U…>` token — which, with the handle resolution above, is what
-  `@builder` in the sending agent's text becomes. The model is told the
+- **Waking on another agent:** a message from another bot wakes this agent
+  only if it @-mentions it with a real `<@U…>` token — which, with the handle
+  resolution above, is what `@builder` in the sending agent's text becomes.
+  Plain text like `@builder` posted by an integration is not a mention. By
+  default any bot may do this; set `AGENT_MENTIONS_FROM` to the allowed
+  senders' Slack user, app or bot ids to restrict it. The model is told the
   message came from an agent.
 - **Silence ends the exchange:** when another agent starts a turn and the reply
   is empty, the "thinking…" placeholder is deleted and nothing is posted.
