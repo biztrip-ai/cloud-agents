@@ -199,6 +199,17 @@ through the normal path instead.
 Each listened channel gets its own session, so the agent keeps context across
 batches.
 
+## Scheduled prompts
+
+Central-Dispatch's scheduled tasks (`/dashboard/scheduled`) can prompt an agent
+silently instead of posting in a channel. When one is due, the agent gets a
+`scheduled_prompt` event and runs it as a **fresh conversation** that is thrown
+away afterwards: nothing is posted, and the reply, cost and duration go back to
+Central-Dispatch (`POST /api/task-result`) for the task's card. If the task
+says to tell someone, the agent posts with its own Slack tools. A run is
+skipped while the previous one is still going, and a run due while the agent
+is offline is recorded as failed rather than queued. See `scheduled.py`.
+
 ## Long waits: `heartbeat`
 
 A turn can only post when it ends, so a tool that blocks for minutes (a CI

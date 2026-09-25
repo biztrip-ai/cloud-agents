@@ -128,7 +128,8 @@ class Chunk:
       - "text"        — assistant text block, suitable for streaming to Slack.
       - "tool_use"    — formatted tool invocation (name + full args) for the transcript.
       - "tool_result" — formatted tool result (id, is_error, full content) for the transcript.
-      - "result"      — terminal turn summary (duration / cost / usage / error).
+      - "result"      — terminal turn summary (duration / cost / usage / error);
+                        `cost_usd` and `duration_ms` carry the numbers.
 
     The optional `name` / `args` / `is_error` fields are populated for
     `tool_use` and `tool_result` chunks so consumers can format short-form
@@ -154,6 +155,8 @@ class Chunk:
     subagent: bool = False
     tool_use_id: Optional[str] = None
     content: Optional[str] = None
+    cost_usd: Optional[float] = None
+    duration_ms: Optional[int] = None
 
 
 class Session:
@@ -634,7 +637,10 @@ class Session:
                             parts.append(f"usage={usage}")
                         self._last_used_at = time.monotonic()
                         complete = True
-                        yield Chunk("result", " ".join(parts), is_error=bool(is_err))
+                        yield Chunk(
+                            "result", " ".join(parts), is_error=bool(is_err),
+                            cost_usd=cost, duration_ms=duration,
+                        )
                         return
             finally:
                 # Cleared after the drain, not before it: what the drain reads
