@@ -54,6 +54,8 @@ from .session_manager import SessionManager, load_cli_mcp_servers
 from .settings import claude_env, load_settings, resolve
 from .slack_io import (
     ATTACH_RE,
+    ChannelFooters,
+    FooterLedger,
     SilentRenderer,
     SlackRenderer,
     download_slack_files,
@@ -61,6 +63,7 @@ from .slack_io import (
     user_label,
     tool_label,
     upload_files,
+    posted_channel,
 )
 
 load_dotenv()
@@ -70,6 +73,9 @@ log = logging.getLogger("agent-wrapper")
 # Per-user state dir (~/.bizzybot by default) — see paths.state_path.
 STATE_PATH = state_path("agent-wrapper-state.json")
 CONFIG_PATH = state_path("agent-wrapper-config.json")
+# "Still working" footers on screen, so a restart can clear a crashed turn's.
+FOOTER_LEDGER = FooterLedger(state_path("footers.json"))
+POST_MESSAGE_TOOL = f"mcp__{slack_tools.SERVER_NAME}__post_message"
 
 # Default hosted Central-Dispatch. Override with CENTRAL_URL (env/.env) or the saved config.
 DEFAULT_CENTRAL_URL = "https://claudebot-production-34ba.up.railway.app"
@@ -785,6 +791,11 @@ async def handle_user_message(
         else SlackRenderer(slack, channel, reply_ts, queued=session.is_busy)
     )
     await renderer.open()
+    # A "working" line in each other channel this turn reports to with
+    # post_message; see ChannelFooters. `posts` maps a pending post_message's
+    # tool_use_id to its args until its result says where it landed.
+    footers = ChannelFooters(slack, skip_channel=channel, ledger=FOOTER_LEDGER)
+    posts: dict[str, dict] = {}
     full_text: list[str] = []
     # Whether any of the *thread's* agent's own words reached the message. It
     # gates the terminal render: the user wrote to us, so a turn that ends with
@@ -807,6 +818,7 @@ async def handle_user_message(
             if secs >= ELAPSED_TICK_S:
                 elapsed = f"{int(secs // 60)}m" if secs >= 60 else f"{int(secs)}s"
                 await renderer.status(f"{label} · {elapsed}")
+                await footers.status(f"{label} · {elapsed}")
 
     ticker = asyncio.create_task(tick_elapsed())
     try:
@@ -839,6 +851,15 @@ async def handle_user_message(
                 activity["label"] = tool_label(chunk.name, chunk.args)
                 activity["since"] = time.monotonic()
                 await renderer.status(activity["label"])
+                await footers.status(activity["label"])
+                if chunk.name == POST_MESSAGE_TOOL and chunk.tool_use_id:
+                    posts[chunk.tool_use_id] = chunk.args or {}
+            elif chunk.kind == "tool_result" and chunk.tool_use_id in posts:
+                post_args = posts.pop(chunk.tool_use_id)
+                if not chunk.is_error:
+                    target = posted_channel(post_args, chunk.content)
+                    if target:
+                        await footers.after_post(target)
         if rendered:
             # The turn is over, so nothing is still running: retire any trailing
             # tool label before the last draw, or a finished reply ends on a line
@@ -871,6 +892,7 @@ async def handle_user_message(
             await renderer.replace_with(f":warning: error: `{e}`")
     finally:
         ticker.cancel()
+        await footers.close()
 
     joined = "\n".join(full_text)
     if payload.get("silent"):
@@ -1704,6 +1726,7 @@ async def main() -> None:
             log.info("!! shell commands enabled for the sponsor")
         sessions = build_session_manager(settings, slack, sponsor_line)
         sessions.start_reaper()
+        await FOOTER_LEDGER.sweep(slack)
 
         # PR review poller. Off unless PR_REVIEW_CHANNEL is set — the same
         # "unconfigured means no-op" shape as Central's email poller.

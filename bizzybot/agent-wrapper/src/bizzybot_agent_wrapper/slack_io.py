@@ -7,6 +7,7 @@ its own module so agent_wrapper.py stays focused on transport (register + WebSoc
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -242,6 +243,146 @@ class SlackRenderer:
             await self._client.chat_update(channel=self._channel, ts=self._ts, text=text)
         except Exception:  # noqa: BLE001
             log.exception("chat_update (error message) failed")
+
+
+class FooterLedger:
+    """Footers currently on screen, kept on disk. A footer is deleted when its
+    turn ends; if the process dies first, the next start deletes what's listed
+    here, so a crash never leaves "working…" standing in a channel."""
+
+    def __init__(self, path: str):
+        self._path = path
+
+    def _load(self) -> list[list[str]]:
+        try:
+            with open(self._path) as f:
+                rows = json.load(f)
+            return [r for r in rows if isinstance(r, list) and len(r) == 2]
+        except (OSError, ValueError):
+            return []
+
+    def _save(self, rows: list[list[str]]) -> None:
+        try:
+            with open(self._path, "w") as f:
+                json.dump(rows, f)
+        except OSError as e:
+            log.warning("footer ledger write failed: %s", e)
+
+    def add(self, channel: str, ts: str) -> None:
+        self._save(self._load() + [[channel, ts]])
+
+    def remove(self, channel: str, ts: str) -> None:
+        self._save([r for r in self._load() if r != [channel, ts]])
+
+    async def sweep(self, client: AsyncWebClient) -> None:
+        """Delete footers a previous run left behind."""
+        rows = self._load()
+        for channel, ts in rows:
+            try:
+                await client.chat_delete(channel=channel, ts=ts)
+            except Exception as e:  # noqa: BLE001 — already gone is fine
+                log.info("stale footer %s/%s not deleted: %s", channel, ts, e)
+        if rows:
+            log.info("swept %d stale footer(s)", len(rows))
+        self._save([])
+
+
+class ChannelFooters:
+    """A "still working" line under the agent's latest report in each channel
+    a turn reports to with post_message.
+
+    The turn's own reply carries a live status line, but a turn that reports
+    into another channel (a Builder writing into its ticket channel) goes quiet
+    there between posts. This keeps one italic message at the bottom of each
+    such channel: edited in place as the tool label changes, deleted and
+    re-posted under each new report so it stays last, and deleted when the turn
+    ends. It's an ordinary message; Slack has no status slot for apps.
+
+    The turn's own channel is skipped: the live reply is already there. Like
+    the renderer, nothing here may raise into the turn's stream consumer."""
+
+    def __init__(
+        self,
+        client: AsyncWebClient,
+        skip_channel: Optional[str] = None,
+        ledger: Optional[FooterLedger] = None,
+    ):
+        self._client = client
+        self._skip = skip_channel
+        self._ledger = ledger
+        self._ts: dict[str, str] = {}
+        self._label = ""
+        self._shown = ""
+        self._last_edit_at = 0.0
+
+    def _text(self) -> str:
+        return f"_🔨 working · {self._label}_" if self._label else "_🔨 working…_"
+
+    async def after_post(self, channel: str) -> None:
+        """The agent just posted top-level into `channel`: put the footer
+        under that post, retiring the one above it."""
+        if not channel or channel == self._skip:
+            return
+        await self._delete(channel)
+        # The current label is the post_message call that just finished.
+        self._label = ""
+        text = self._text()
+        try:
+            resp = await self._client.chat_postMessage(channel=channel, text=text)
+        except Exception as e:  # noqa: BLE001
+            log.warning("footer post in %s failed: %s", channel, e)
+            return
+        self._ts[channel] = resp["ts"]
+        self._shown = text
+        if self._ledger:
+            self._ledger.add(channel, resp["ts"])
+
+    async def status(self, label: str) -> None:
+        self._label = label
+        text = self._text()
+        if not self._ts or text == self._shown:
+            return
+        now = time.monotonic()
+        if now - self._last_edit_at < MIN_UPDATE_INTERVAL_S:
+            return  # the elapsed ticker's next redraw catches it up
+        self._last_edit_at = now
+        self._shown = text
+        for channel, ts in list(self._ts.items()):
+            try:
+                await self._client.chat_update(channel=channel, ts=ts, text=text)
+            except Exception as e:  # noqa: BLE001
+                log.warning("footer edit in %s failed: %s", channel, e)
+
+    async def close(self) -> None:
+        for channel in list(self._ts):
+            await self._delete(channel)
+
+    async def _delete(self, channel: str) -> None:
+        ts = self._ts.pop(channel, None)
+        if ts is None:
+            return
+        try:
+            await self._client.chat_delete(channel=channel, ts=ts)
+        except Exception as e:  # noqa: BLE001
+            # Leave it in the ledger so the next start's sweep retries it.
+            log.warning("footer delete in %s failed: %s", channel, e)
+            return
+        if self._ledger:
+            self._ledger.remove(channel, ts)
+
+
+def posted_channel(post_args: dict, result: Optional[str]) -> Optional[str]:
+    """The channel a successful top-level post_message landed in, from its
+    result (`{"channel": id, "ts": …}`); None for a thread reply, where a
+    footer would only clutter the thread."""
+    if (post_args.get("thread_ts") or "").strip():
+        return None
+    try:
+        data = json.loads(result or "")
+    except ValueError:
+        return None
+    channel = data.get("channel") if isinstance(data, dict) else None
+    return channel if isinstance(channel, str) and channel else None
 
 
 class SilentRenderer:

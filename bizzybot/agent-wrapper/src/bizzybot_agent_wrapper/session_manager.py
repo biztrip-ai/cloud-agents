@@ -136,6 +136,10 @@ class Chunk:
     chunk when the turn itself failed — the SDK reports that as a message, not
     an exception, so it is the only way to tell a failed turn from a quiet one.
 
+    `tool_use_id` pairs a `tool_use` chunk with its `tool_result`, and
+    `content` is the result's raw text, for consumers that act on what a tool
+    returned (the channel a post_message landed in, say).
+
     `subagent` marks a chunk that a sub-agent produced in its own conversation
     (the SDK calls it a sidechain; see Session.send) rather than the thread's
     agent speaking. Anything that renders a chunk as the agent's own words must
@@ -148,6 +152,8 @@ class Chunk:
     args: Optional[dict] = None
     is_error: bool = False
     subagent: bool = False
+    tool_use_id: Optional[str] = None
+    content: Optional[str] = None
 
 
 class Session:
@@ -513,6 +519,7 @@ class Session:
                                     name=block.name,
                                     args=dict(block.input or {}),
                                     subagent=bool(sub),
+                                    tool_use_id=block.id,
                                 )
                             elif isinstance(block, ThinkingBlock):
                                 self.log.debug(
@@ -531,8 +538,12 @@ class Session:
                             if isinstance(block, ToolResultBlock):
                                 content = block.content
                                 if isinstance(content, list):
+                                    # MCP results arrive as dicts
+                                    # ({"type": "text", "text": …}), not objects.
                                     content_str = " ".join(
-                                        getattr(c, "text", repr(c)) for c in content
+                                        c.get("text", repr(c)) if isinstance(c, dict)
+                                        else getattr(c, "text", repr(c))
+                                        for c in content
                                     )
                                 else:
                                     content_str = str(content)
@@ -556,6 +567,8 @@ class Session:
                                     ),
                                     is_error=bool(block.is_error),
                                     subagent=bool(sub),
+                                    tool_use_id=block.tool_use_id,
+                                    content=content_str,
                                 )
                     elif isinstance(msg, SystemMessage):
                         data = getattr(msg, "data", {}) or {}
