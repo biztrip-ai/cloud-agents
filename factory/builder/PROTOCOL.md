@@ -28,10 +28,18 @@ for. Everything else gets an **empty** final reply. Never post "Silent." or
    it isn't, say so in one line in `#factory` and stop.
 2. **Create the ticket channel.** `create_channel` named after the ticket,
    lowercased: `bp-123`. Make it public, with the topic set to
-   `BP-123: <summary>`. Invite Scott, BzPM **and Merger** — the whole ticket,
-   review and merge included, happens in here (`invite_user_ids`; the ids
-   of `@scottp` and `@bzpm` from `list_users`). If the channel already exists (a ticket sent back for
-   changes), reuse it.
+   `BP-123: <summary>`. Invite BzPM, **Merger**, and **whoever requested the
+   ticket** — BzPM's dispatch names them (`Requested by @someone`) — so the
+   whole ticket, review and merge included, happens in here
+   (`invite_user_ids`; ids from `list_users`). Slack only lets you invite
+   people on the create call, so do it there.
+
+   **Don't invite Scott unless he is the requester.** He does not want to sit
+   in channels opened for other people's requests: BzPM relays status to him
+   in `#factory`, the channel is public so he can read or join it whenever he
+   wants, and anyone else can be added on request. If the dispatch names no
+   requester, invite BzPM and Merger only. If the channel already exists (a
+   ticket sent back for changes), reuse it.
 3. **Claim.** Move the ticket to **In Progress**. Comment the channel on the
    ticket: `Builder is working this in Slack #bp-123`.
 4. **Ack.** One line in `#factory` (it mentions nobody, so it wakes nobody):
