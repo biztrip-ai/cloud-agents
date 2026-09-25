@@ -214,6 +214,19 @@ wait, a long test run) leaves the thread looking dead. Two things fix that:
 Prefer several short waits with a `heartbeat` between them over one long
 blocking wait: the agent can't read new messages until its turn ends.
 
+## Working footers in report channels
+
+A turn that reports into *another* channel with `post_message` (a builder
+writing progress into its ticket channel) would otherwise go quiet there
+between posts. The bridge keeps one italic line under the agent's latest
+top-level post in each such channel: `🔨 working · 🔧 pytest … · 4m`. The line
+is edited in place as the activity line changes, deleted and re-posted under
+each new report so it stays last, and deleted when the turn ends. It's an
+ordinary message; Slack has no status slot for apps. It is skipped for the
+turn's own channel and for thread replies. Footers still on screen are listed
+in `~/.bizzybot/footers.json`, and a restart deletes any that a crash left
+behind.
+
 ## Multi-agent hand-offs
 
 Several agents can pass work to each other in Slack (e.g. a PM agent
