@@ -42,7 +42,9 @@ workspace. Other
 Slack tools you may have can point at a different workspace. Only archive a
 channel when the person asked for that specific channel to be archived.
 Your reply to the current conversation is posted for you; use post_message
-only to write somewhere else (another channel or thread). To notify a person
+only to write somewhere else (another channel or thread). To DM someone, pass
+their user id or @handle as post_message's channel; the DM is opened for you,
+and their reply reaches you there as a new conversation. To notify a person
 or agent, write their Slack handle as `@handle` (the `name` from list_users,
 e.g. `@builder`) or their mention token `<@USERID>`; the bridge turns known
 handles into real mentions. Write the token with plain angle brackets, never
@@ -185,6 +187,36 @@ async def _resolve_channel(slack: AsyncWebClient, ref: str) -> Optional[dict[str
         if (c.get("name") or "").lower() == name:
             return c
     return None
+
+
+async def _open_dm(slack: AsyncWebClient, user_id: str) -> str:
+    """The bot's 1:1 DM with a user, created if it doesn't exist yet
+    (conversations.open is idempotent). Needs the `im:write` scope."""
+    resp = await slack.conversations_open(users=user_id)
+    return resp["channel"]["id"]
+
+
+async def _conversation_id(slack: AsyncWebClient, ref: str) -> tuple[Optional[str], str]:
+    """Resolve a tool's `channel` argument to a conversation id, or (None,
+    error). Takes a channel id or name, a DM id, or a person: a user id
+    (U…/W…) or `@handle` opens (or reuses) the bot's DM with them. A bare
+    word that isn't a channel is tried as a handle too."""
+    ref = ref.strip()
+    if re.fullmatch(r"D[A-Z0-9]{6,}", ref):
+        return ref, ""
+    m = re.fullmatch(r"<@([UW][A-Z0-9]{6,})(?:\|[^>]*)?>|([UW][A-Z0-9]{6,})", ref)
+    if m:
+        return await _open_dm(slack, m.group(1) or m.group(2)), ""
+    if not ref.startswith("@"):
+        channel = await _resolve_channel(slack, ref)
+        if channel is not None:
+            return channel["id"], ""
+        if ref.startswith("#"):
+            return None, f"No channel {ref} that the bot can see"
+    uid = await directory_for(slack).lookup(ref.lstrip("@"))
+    if uid:
+        return await _open_dm(slack, uid), ""
+    return None, f"No channel or person {ref} that the bot can see (list_users shows handles)"
 
 
 # Longest message text read_messages returns per message; the rest is cut.
@@ -457,13 +489,15 @@ def build_slack_mcp_server(slack: AsyncWebClient) -> McpSdkServerConfig:
         "conversation you're replying in: your reply there is posted for you. "
         "Mention people or agents as `@handle` (their Slack username) or with "
         "`<@USERID>` tokens; known handles are turned into real mentions. The bot "
-        "must be a member of the channel.",
+        "must be a member of the channel. To message a person directly, pass their "
+        "user id or @handle as the channel: the DM is opened if it doesn't exist yet.",
         {
             "type": "object",
             "properties": {
                 "channel": {
                     "type": "string",
-                    "description": "Channel id (C…/G…/D…) or name, with or without the leading #.",
+                    "description": "Channel id (C…/G…/D…) or name, with or without the leading #; "
+                    "or a person (user id U… or @handle) for your DM with them.",
                 },
                 "text": {"type": "string", "description": "Message text, Slack mrkdwn."},
                 "thread_ts": {
@@ -486,13 +520,9 @@ def build_slack_mcp_server(slack: AsyncWebClient) -> McpSdkServerConfig:
         text = (args.get("text") or "").strip()
         if not ref or not text:
             return _err("post_message needs a channel and some text")
-        if re.fullmatch(r"D[A-Z0-9]{6,}", ref):
-            channel_id = ref
-        else:
-            channel = await _resolve_channel(slack, ref)
-            if channel is None:
-                return _err(f"No channel {ref} that the bot can see")
-            channel_id = channel["id"]
+        channel_id, problem = await _conversation_id(slack, ref)
+        if channel_id is None:
+            return _err(problem)
         thread_ts = (args.get("thread_ts") or "").strip() or None
         text = await directory_for(slack).resolve(text)
         resp = await slack.chat_postMessage(channel=channel_id, text=text, thread_ts=thread_ts)
@@ -514,7 +544,8 @@ def build_slack_mcp_server(slack: AsyncWebClient) -> McpSdkServerConfig:
             "properties": {
                 "channel": {
                     "type": "string",
-                    "description": "Channel id (C…/G…/D…) or name, with or without the leading #.",
+                    "description": "Channel id (C…/G…/D…) or name, with or without the leading #; "
+                    "or a person (user id U… or @handle) for your DM with them.",
                 },
                 "thread_ts": {"type": "string", "description": "Read this thread's replies instead of the channel."},
                 "oldest": {"type": "string", "description": "Only messages after this ts."},
@@ -529,13 +560,9 @@ def build_slack_mcp_server(slack: AsyncWebClient) -> McpSdkServerConfig:
         ref = (args.get("channel") or "").strip()
         if not ref:
             return _err("read_messages needs a channel id or name")
-        if re.fullmatch(r"D[A-Z0-9]{6,}", ref):
-            channel_id = ref
-        else:
-            channel = await _resolve_channel(slack, ref)
-            if channel is None:
-                return _err(f"No channel {ref} that the bot can see")
-            channel_id = channel["id"]
+        channel_id, problem = await _conversation_id(slack, ref)
+        if channel_id is None:
+            return _err(problem)
         limit = max(1, min(int(args.get("limit") or 20), 100))
         kwargs: dict[str, Any] = {"channel": channel_id, "limit": limit}
         if args.get("oldest"):
@@ -561,7 +588,8 @@ def build_slack_mcp_server(slack: AsyncWebClient) -> McpSdkServerConfig:
             "properties": {
                 "channel": {
                     "type": "string",
-                    "description": "Channel id (C…/G…/D…) or name, with or without the leading #.",
+                    "description": "Channel id (C…/G…/D…) or name, with or without the leading #; "
+                    "or a person (user id U… or @handle) for your DM with them.",
                 },
                 "timestamp": {"type": "string", "description": "The message's ts."},
                 "name": {"type": "string", "description": "Emoji name without colons, e.g. white_check_mark."},
@@ -577,13 +605,9 @@ def build_slack_mcp_server(slack: AsyncWebClient) -> McpSdkServerConfig:
         name = (args.get("name") or "").strip().strip(":")
         if not ref or not ts or not name:
             return _err("add_reaction needs a channel, timestamp and emoji name")
-        if re.fullmatch(r"D[A-Z0-9]{6,}", ref):
-            channel_id = ref
-        else:
-            channel = await _resolve_channel(slack, ref)
-            if channel is None:
-                return _err(f"No channel {ref} that the bot can see")
-            channel_id = channel["id"]
+        channel_id, problem = await _conversation_id(slack, ref)
+        if channel_id is None:
+            return _err(problem)
         try:
             await slack.reactions_add(channel=channel_id, timestamp=ts, name=name)
         except SlackApiError as e:
