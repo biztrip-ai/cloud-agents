@@ -176,6 +176,27 @@ test('creation is refused for bad input', async () => {
   assert.equal((await tasks()).length, 0);
 });
 
+test('a daily task keeps its time of day and needs a start time', async () => {
+  const DAY = 24 * 60 * MIN;
+  const ok = { agentId: agent.id, channel: 'C_brain', interval: String(24 * 60), text: 'daily' };
+  const where = async (body) => (await post('/dashboard/scheduled', { ...ok, ...body })).headers.get('location');
+  assert.match(await where({ runAt: '' }), /err=when/);
+
+  // Started "an hour ago": first run is tomorrow at that time, not 24h from now.
+  const start = Date.now() - 60 * MIN;
+  assert.equal(await where({ runAt: String(start) }), '/dashboard/scheduled');
+  const [t] = await tasks();
+  assert.equal(Number(t.next_run_at), start + DAY);
+
+  await sched.runDueTasks(start + DAY);
+  assert.equal(posts.length, 1);
+  assert.equal(Number((await tasks())[0].next_run_at), start + 2 * DAY);
+
+  const page = await (await fetch(`${base}/dashboard/scheduled`, { headers: { Cookie: cookieFor('U0SCOTT') } })).text();
+  assert.match(page, /every day/);
+  assert.match(page, /<option value="10080"[^>]*>Every week</);
+});
+
 test('another workspace cannot touch a task', async () => {
   await post('/dashboard/scheduled', { agentId: agent.id, channel: 'C_brain', interval: '5', text: 'hi', runAt: '' });
   const [t] = await tasks();
