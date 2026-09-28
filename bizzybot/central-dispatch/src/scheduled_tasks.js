@@ -1,4 +1,4 @@
-// Scheduled tasks: once, or every 5/10/15/30/60 minutes, one of the signed-in
+// Scheduled tasks: once, every 5/10/15/30/60 minutes, or daily or weekly, one of the signed-in
 // workspace's agents either
 //
 //   - posts a message to a Slack channel (mode 'post'). A task that mentions
@@ -22,7 +22,9 @@ import { onlineIds, pushEvent } from './wsHub.js';
 
 const TASKS = isPg ? `${config.dbSchema}.scheduled_tasks` : 'scheduled_tasks';
 
-export const INTERVALS = [5, 10, 15, 30, 60]; // minutes; 0 means once
+const DAY_MIN = 24 * 60;
+const WEEK_MIN = 7 * DAY_MIN;
+export const INTERVALS = [5, 10, 15, 30, 60, DAY_MIN, WEEK_MIN]; // minutes; 0 means once
 const MIN = 60 * 1000;
 const TICK_MS = 30 * 1000;
 const MAX_TEXT = 4000;
@@ -226,14 +228,18 @@ function escapeHtml(s) {
   ));
 }
 
-const scheduleLabel = (iv) => (iv ? `every ${iv} min` : 'once');
+// Daily and weekly tasks run at the start time's time of day (and weekday),
+// so they need a start time; a fixed 24h step drifts an hour across a DST change.
+const needsStart = (iv) => iv >= DAY_MIN;
+const scheduleLabel = (iv) =>
+  !iv ? 'once' : iv === DAY_MIN ? 'every day' : iv === WEEK_MIN ? 'every week' : `every ${iv} min`;
 
 const ERRORS = {
   agent: 'Pick an agent.',
   channel: 'Pick a channel the bot is in.',
   text: `Write a message (up to ${MAX_TEXT} characters).`,
   interval: 'Pick a schedule.',
-  when: 'A one-time task needs a time in the future.',
+  when: 'A one-time task needs a time in the future, and a daily or weekly one needs a start time.',
   slack: 'Slack didn’t answer. Try again in a moment.',
   scope: 'That bot’s Slack app is missing a permission. Reinstall it from the dashboard, then try again.',
 };
@@ -362,7 +368,7 @@ scheduledRouter.get('/dashboard/scheduled', h(async (req, res) => {
       can’t be listed. <a href="/dashboard">Reinstall it from the dashboard</a> to fix this.</p>`)
     .join('');
   const intervalOptions = [0, ...INTERVALS]
-    .map((iv) => `<option value="${iv}">${iv ? `Every ${iv} minutes` : 'Once'}</option>`)
+    .map((iv) => `<option value="${iv}" data-needs-start="${needsStart(iv) ? 1 : ''}">${scheduleLabel(iv).replace(/^./, (c) => c.toUpperCase()).replace(/ min$/, ' minutes')}</option>`)
     .join('');
 
   const form = agents.length
@@ -421,11 +427,14 @@ if (form) {
   };
   var showWhen = function () {
     var once = interval.value === '0';
+    var fixed = !!interval.selectedOptions[0].dataset.needsStart;
     document.getElementById('whenLabel').textContent = once ? 'At' : 'Starting';
-    when.required = once;
+    when.required = once || fixed;
     document.getElementById('whenHint').textContent = once
       ? 'Runs once at this time.'
-      : 'Leave blank to start one interval from now. Use "send now" / "run now" on the task to go right away.';
+      : fixed
+        ? 'Runs at this time of day' + (interval.value === '${WEEK_MIN}' ? ', on this weekday' : '') + '. A start time already past today begins with the next one. Use "send now" / "run now" on the task to go right away.'
+        : 'Leave blank to start one interval from now. Use "send now" / "run now" on the task to go right away.';
   };
   var showMode = function () {
     var silent = form.querySelector('input[name=mode]:checked').value === 'prompt';
@@ -465,7 +474,10 @@ scheduledRouter.post('/dashboard/scheduled', h(async (req, res) => {
   const now = Date.now();
   const runAt = Number(req.body?.runAt) || 0;
   if (!iv && runAt < now - MIN) return fail('when');
-  const firstRun = iv ? (runAt > now ? runAt : now + iv * MIN) : Math.max(runAt, now);
+  if (needsStart(iv) && !runAt) return fail('when');
+  // A start time in the past keeps its grid: a daily task "from 9:00" added
+  // at 10:00 first runs tomorrow at 9:00.
+  const firstRun = iv ? (runAt ? nextRunAfter(runAt, iv, now) : now + iv * MIN) : Math.max(runAt, now);
 
   if (req.body?.mode === 'prompt') {
     await run(
