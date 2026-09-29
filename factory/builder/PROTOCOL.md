@@ -75,6 +75,18 @@ The ticket channel is the running record; anyone posting there is steering you.
   `scripts/devstack/bootstrap-base.sh` once and spawn again.
   Commit messages and the PR title start with the key: `BP-123: <what changed>`.
   The key in the title is what links the PR to the ticket.
+- **Author commits as the person who asked.** A ticket's reporter is who the
+  work is for, and `git blame` is where that has to survive. Read
+  `fields.reporter.accountId` from the ticket and look it up in
+  `factory/people.yaml` in this repo. When it is there, author every commit as
+  them:
+
+      git -c user.name="<name>" -c user.email="<email>" commit …
+
+  When it is not, commit normally: the box's own identity is the factory, which
+  is the honest answer for a ticket no person asked for. Never construct an
+  address that isn't in the file. The committer stays the factory either way,
+  so the history still records what applied the change.
 - **Follow `.claude/skills/dev-workflow/SKILL.md`.** It is the contract for
   env setup, dev servers, CI test commands, PR descriptions and screenshots,
   and it outranks this file where they overlap. Differences on this box:
