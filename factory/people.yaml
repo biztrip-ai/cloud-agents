@@ -3,13 +3,26 @@
 # Keyed by accountId, not display name: names are neither stable nor unique,
 # and Jira's API does not return email addresses at all.
 #
-# Only add an address its owner has verified on their GitHub account, or the
-# commit links to nobody. Never guess one: a wrong address credits whoever
-# happens to own it.
+# The addresses are GitHub's own `<id>+<login>@users.noreply.github.com` form.
+# It links the commit to that account without anyone publishing a real mailbox,
+# and it needs no verification step. Never construct one by hand: read the id
+# and login from the GitHub API, because a wrong address credits whoever owns it.
 #
 # Someone missing here is not an error. Their tickets are authored by the
 # factory, which is the right answer for tickets no person asked for.
+#
+# Do NOT add the account the agents themselves write Jira with. Every ticket
+# BzPM creates carries that account as its reporter, so mapping it would credit
+# one person for the factory's own output.
 
 "712020:ab58127a-0c2e-4d7d-b7e4-7e1a1ffa0db8":
   name: Roshan Khandelwal
-  email: roshan@biztrip.ai
+  email: 112270284+roshankhandelwal97@users.noreply.github.com
+
+"70121:1e04d1a0-6b83-4500-a2cc-bd5fd5c47482":
+  name: Scott Persinger
+  email: 80947+scottpersinger@users.noreply.github.com
+
+"712020:9dfda8c0-e1bb-4072-91f7-dadd09511aaf":
+  name: Freddy Shim
+  email: 62468975+freddyshim@users.noreply.github.com
