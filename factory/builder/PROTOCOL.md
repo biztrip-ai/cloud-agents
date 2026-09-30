@@ -78,8 +78,8 @@ The ticket channel is the running record; anyone posting there is steering you.
 - **Author commits as the person who asked.** A ticket's reporter is who the
   work is for, and `git blame` is where that has to survive. Read
   `fields.reporter.accountId` from the ticket and look it up in
-  `factory/people.yaml` in this repo. When it is there, author every commit as
-  them:
+  `.claude/people.yaml` in the btdash checkout. When it is there, author every
+  commit as them:
 
       git -c user.name="<name>" -c user.email="<email>" commit …
 
