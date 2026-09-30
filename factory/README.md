@@ -82,6 +82,22 @@ btdash's own skills in its `.claude/skills/` (`dev-workflow`, `test-pr`,
 btdash checkout at `/workspaces/projects/btdash` — that's where the work
 happens.
 
+### Deploying a protocol change
+
+Nothing pulls the checkouts automatically, so a merged protocol change does
+nothing until you roll it out. After merging, pull `main` on all three boxes:
+
+```sh
+for a in BzPM Builder Merger; do
+  bin/agents ssh biztrip $a \
+    'cd /workspaces/projects/cloud-agents && git pull --ff-only -q && git log --oneline -1'
+done
+```
+
+Each box should print the merge commit. No restart is needed: the next
+session reads the new file. A session already in progress keeps the protocol
+it started with.
+
 ## Setup (cloud agents)
 
 Each agent is a Bizzybot cloud agent (see
