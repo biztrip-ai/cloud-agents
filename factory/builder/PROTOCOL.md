@@ -128,6 +128,14 @@ The ticket channel is the running record; anyone posting there is steering you.
   bp-123` (`--no-pr bp-123` if it never got a PR). With
   `DEVSTACK_NO_MAIN_STACK=1` set, it rebuilds the base instead of building the
   main stack on this box.
+- **Reap merged worktrees on every dispatch.** You aren't woken when Merger
+  merges your PR, so leftover worktrees fill the disk. Before spawning a new
+  worktree, check each one under `.claude/worktrees/` with
+  `gh pr view <branch> --json state`. For each whose PR is `MERGED`, stop its
+  servers and run `finish-worktree.sh` on it. Leave open PRs alone, along with
+  anything with uncommitted changes and anything that isn't a `bp-*` ticket
+  worktree. If a merged worktree's servers are still running because someone
+  was trying the change, stopping them is fine: the change is on `main`.
 - **Never push to `main`.** Open one PR per ticket and post its link in the
   ticket channel.
 
