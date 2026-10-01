@@ -11,6 +11,7 @@ from bizzybot_agent_wrapper import slack_io
 from bizzybot_agent_wrapper.slack_io import (
     ChannelFooters,
     FooterLedger,
+    footer_owner,
     footer_skip_channel,
     posted_channel,
 )
@@ -125,3 +126,23 @@ def test_own_channel_skipped_only_when_the_turn_replies_at_top_level():
     # A turn started by an @-mention replies in that message's thread; its
     # top-level reports in the same channel must get the footer.
     assert footer_skip_channel("CBP91", "1790367413.923969") is None
+
+
+def test_a_footer_routes_its_thread_to_the_turn_that_owns_it():
+    slack = FakeSlack()
+    footers = ChannelFooters(slack, owner="CBP212:1790874147.313669")
+
+    async def turn():
+        await footers.after_post("CBP212")
+        ((channel, ts),) = slack.live
+        # The footer says how to stop, and its thread leads to the turn.
+        assert slack.live[(channel, ts)] == "_🔨 working… · reply !stop to stop_"
+        assert footer_owner(f"{channel}:{ts}") == "CBP212:1790874147.313669"
+        await footers.after_post("CBP212")  # a new report moves the footer
+        assert footer_owner(f"{channel}:{ts}") is None
+        ((_, ts2),) = slack.live
+        assert footer_owner(f"CBP212:{ts2}") == "CBP212:1790874147.313669"
+        await footers.close()
+        assert footer_owner(f"CBP212:{ts2}") is None
+
+    run(turn())

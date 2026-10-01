@@ -60,6 +60,7 @@ from .slack_io import (
     SilentRenderer,
     SlackRenderer,
     download_slack_files,
+    footer_owner,
     footer_skip_channel,
     sender_line,
     user_label,
@@ -798,7 +799,8 @@ async def handle_user_message(
     # post_message; see ChannelFooters. `posts` maps a pending post_message's
     # tool_use_id to its args until its result says where it landed.
     footers = ChannelFooters(
-        slack, skip_channel=footer_skip_channel(channel, reply_ts), ledger=FOOTER_LEDGER
+        slack, skip_channel=footer_skip_channel(channel, reply_ts), ledger=FOOTER_LEDGER,
+        owner=thread_key,
     )
     posts: dict[str, dict] = {}
     full_text: list[str] = []
@@ -1370,7 +1372,7 @@ def in_engaged_thread(payload: Any, sessions: SessionManager) -> bool:
     if not channel or not thread_ts:
         return False
     key = f"{channel}:{thread_ts}"
-    return sessions.exists(key) or sessions.has_resume(key)
+    return sessions.exists(key) or sessions.has_resume(key) or footer_owner(key) is not None
 
 
 async def dispatch_event(payload: Any, sessions: SessionManager, slack: AsyncWebClient) -> None:
@@ -1411,6 +1413,13 @@ async def dispatch_event(payload: Any, sessions: SessionManager, slack: AsyncWeb
     msg = normalize_slack_event(payload, bot_user_id)
     if msg is None:
         return  # not addressed to us / an echo — ignore (still acked)
+    # A reply under a running turn's "working" footer is for that turn: `!stop`
+    # there stops it, and anything else joins its conversation. The answer is
+    # posted where the person wrote.
+    owner = footer_owner(msg["thread_key"])
+    if owner:
+        msg["thread_key"] = owner
+        msg.pop("needs_active_session", None)
     # A top-level post without an @-mention only reaches the bot in a channel
     # it created. There the bot answers at top level, not in a thread — only an
     # @-mention opens a thread — and every such post shares one conversation
