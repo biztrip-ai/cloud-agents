@@ -44,3 +44,35 @@ def test_a_top_level_message_is_never_a_thread_reply():
 def test_non_messages_are_ignored():
     assert not in_engaged_thread({"type": "reaction_added", "channel": "C1", "thread_ts": "100.1"}, Sessions(live={"C1:100.1"}))
     assert not in_engaged_thread("not a dict", Sessions(live={"C1:100.1"}))
+
+
+# --- Replies under a "working" footer ------------------------------------------
+
+import asyncio
+
+from bizzybot_agent_wrapper import agent_wrapper, slack_io
+
+
+def test_a_reply_under_a_working_footer_is_ours(monkeypatch):
+    monkeypatch.setitem(slack_io._FOOTER_OWNERS, "C1:300.1", "C9:100.1")
+    assert in_engaged_thread(reply(thread_ts="300.1"), Sessions())
+
+
+def test_stop_under_a_working_footer_stops_the_turn_that_owns_it(monkeypatch):
+    # The footer sits in #bp-212; the turn it reports for lives in another thread.
+    monkeypatch.setitem(slack_io._FOOTER_OWNERS, "C1:300.1", "C1:100.1")
+    seen = []
+
+    async def fake_stop(payload, sessions, slack):
+        seen.append(payload)
+
+    async def bot_id(_slack):
+        return "UBOT"
+
+    monkeypatch.setitem(agent_wrapper.META_COMMANDS, "!stop", (fake_stop, "stop"))
+    monkeypatch.setattr(agent_wrapper, "get_bot_user_id", bot_id)
+    event = reply(thread_ts="300.1", channel_type="channel", user="UHUMAN", text="!stop")
+    asyncio.run(agent_wrapper.dispatch_event(event, Sessions(), slack=None))
+    assert len(seen) == 1
+    assert seen[0]["thread_key"] == "C1:100.1"  # the owning turn's session
+    assert (seen[0]["channel"], seen[0]["reply_thread_ts"]) == ("C1", "300.1")  # answered where typed
