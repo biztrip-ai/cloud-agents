@@ -287,6 +287,18 @@ class FooterLedger:
         self._save([])
 
 
+# "<channel>:<footer ts>" -> the session key of the turn that footer belongs to.
+# A footer is an ordinary top-level message, so a reply in its thread (people
+# type `!stop` there, under the line that says the agent is working) would
+# otherwise land in a thread with no session and reach nothing.
+_FOOTER_OWNERS: dict[str, str] = {}
+
+
+def footer_owner(thread_key: Optional[str]) -> Optional[str]:
+    """The session key of the turn whose live footer heads this thread, if any."""
+    return _FOOTER_OWNERS.get(thread_key or "")
+
+
 class ChannelFooters:
     """A "still working" line under the agent's latest report in each channel
     a turn reports to with post_message.
@@ -299,17 +311,20 @@ class ChannelFooters:
     ends. It's an ordinary message; Slack has no status slot for apps.
 
     `skip_channel` is the channel whose top level already shows the turn's
-    live reply (see footer_skip_channel). Like the renderer, nothing here may
-    raise into the turn's stream consumer."""
+    live reply (see footer_skip_channel). `owner` is the turn's session key:
+    while a footer is up, replies in its thread go to that turn (footer_owner).
+    Like the renderer, nothing here may raise into the turn's stream consumer."""
 
     def __init__(
         self,
         client: AsyncWebClient,
         skip_channel: Optional[str] = None,
         ledger: Optional[FooterLedger] = None,
+        owner: Optional[str] = None,
     ):
         self._client = client
         self._skip = skip_channel
+        self._owner = owner
         self._ledger = ledger
         self._ts: dict[str, str] = {}
         self._label = ""
@@ -317,7 +332,8 @@ class ChannelFooters:
         self._last_edit_at = 0.0
 
     def _text(self) -> str:
-        return f"_🔨 working · {self._label}_" if self._label else "_🔨 working…_"
+        stop = " · reply !stop to stop" if self._owner else ""
+        return f"_🔨 working · {self._label}{stop}_" if self._label else f"_🔨 working…{stop}_"
 
     async def after_post(self, channel: str) -> None:
         """The agent just posted top-level into `channel`: put the footer
@@ -335,6 +351,8 @@ class ChannelFooters:
             return
         self._ts[channel] = resp["ts"]
         self._shown = text
+        if self._owner:
+            _FOOTER_OWNERS[f"{channel}:{resp['ts']}"] = self._owner
         if self._ledger:
             self._ledger.add(channel, resp["ts"])
 
@@ -362,6 +380,7 @@ class ChannelFooters:
         ts = self._ts.pop(channel, None)
         if ts is None:
             return
+        _FOOTER_OWNERS.pop(f"{channel}:{ts}", None)
         try:
             await self._client.chat_delete(channel=channel, ts=ts)
         except Exception as e:  # noqa: BLE001
