@@ -9,7 +9,7 @@ Bizzybot Slack bridge.
 |---|---|---|---|
 | **BzPM** (`@bzpm`) | `pm/` | bizzy-btbot | Product manager. Writes tickets, moves approved ones to Ready and dispatches Builder, reviews and approves PRs, hands them to Merger, and escalates to Human Review. |
 | **Builder** (`@builder`) | `builder/` | Scott (author "Builder") | Takes a Ready ticket and works it in its own Slack channel. Opens the PR, runs the change locally and checks it in a browser, moves the ticket to In Review and reports to BzPM. |
-| **Merger** (`@merger`) | `merger/` | Scott (author "Merger") | Merges approved PRs, watches the staging/dev (and mobile) deploys go green, and moves the ticket to Done. Never tags production. |
+| **Merger** (`@merger`) | `merger/` | Scott (author "Merger") | Gets approved PRs green, asks Scott for his go, merges, watches the staging/dev (and mobile) deploys go green, and moves the ticket to Done. Never tags production. |
 
 BzPM reviews as a different GitHub account from the one Builder opens PRs
 with, so its approval satisfies `main`'s one-review rule.
@@ -37,7 +37,8 @@ https://biztrip-team.atlassian.net/jira/software/projects/BP/boards/168
                      └─▶ "@bzpm BP-n is done: PR #x"
                                   │ BzPM reviews here
                                   ├─ approve ─▶ "@merger merge PR #x"
-                                  │             └─▶ merge ─▶ deploy green ─▶ Done ─▶ ✅
+                                  │             └─▶ CI green ─▶ "@scottp Merge it?" (#factory)
+                                  │                 └─▶ Scott's go ─▶ merge ─▶ deploy green ─▶ Done ─▶ ✅
                                   ├─ changes ─▶ In Progress, "@builder PR #x needs changes"
                                   └─ needs a human ─▶ Human Review (BzPM tells Scott in #factory)
 
@@ -49,8 +50,9 @@ Agents use the Atlassian MCP (`mcp__atlassian__*`, site
 
 ## Slack
 
-- **`#factory`**: Scott and BzPM. Requests, "Build it?", the dispatch to
-  Builder, status back to Scott, and anything needing Human Review.
+- **`#factory`**: Scott, BzPM and Merger. Requests, "Build it?", the dispatch
+  to Builder, Merger's "Merge it?" before every merge and Scott's answer,
+  status back to Scott, and anything needing Human Review.
 - **`#bp-<n>`**: one per ticket, created by Builder, with BzPM, Merger and
   whoever requested the ticket invited — Scott only when the request was his,
   since he doesn't want a channel per request from someone else. The channels
