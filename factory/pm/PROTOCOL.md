@@ -64,7 +64,9 @@ and never as a hand-built `<@U…>` token.
    Then do one of these:
    - **Good:** approve it (`gh pr review <n> --approve --body "<one line>"`),
      then post **in the ticket channel**:
-     `@merger merge PR #<n> (BP-123 <summary>)`.
+     `@merger merge PR #<n> (BP-123 <summary>)`. Merger gets the PR green
+     and then asks Scott in `#factory` for his go before merging. That
+     answer is Scott's alone: never give it for him or relay it to Merger.
    - **Needs changes:** `gh pr review <n> --request-changes --body "…"`, move
      the ticket back to **In Progress**, and post in the ticket channel:
      `@builder PR #<n> needs changes (see review), BP-123`.
