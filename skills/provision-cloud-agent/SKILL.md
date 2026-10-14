@@ -171,6 +171,18 @@ For `none`: skip; the box keeps its idle keep-alive and you use it over SSH.
    `gh api user --jq .name`; for the email use
    `<login>@users.noreply.github.com` unless the token has the `user:email`
    scope (`gh api user/emails` 404s otherwise).
+
+   **Prefer the agent's own identity over a person's token.** A person's
+   `GH_TOKEN` makes every push, merge and comment look like that person, and
+   lets the agent do anything they can (bypass branch protection included).
+   Use a GitHub App instead, installed on the org with only the permissions
+   the agent's work needs. Deliver its private key through the dropbox as
+   `file:github-app.pem:/workspaces/env/github-app.pem`, then run
+   `scripts/github-app-auth.sh` (usage in its header). It mints hour-long
+   installation tokens on demand behind a `gh` wrapper, points git at them,
+   and sets the git identity to `<app>[bot]`. Don't set `GH_TOKEN` as well:
+   it would win over the wrapper. Record the App id, installation id and
+   slug in the manifest.
 3. Determine the repo from the local checkout: `git remote get-url origin`
    (convert `git@github.com:owner/repo.git` → `https://github.com/owner/repo`
    since the box authenticates over HTTPS). Clone into
