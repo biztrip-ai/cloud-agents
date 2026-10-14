@@ -1,7 +1,7 @@
 # Factory: btdash's agent pipeline
 
 Three always-on cloud agents turn Jira tickets into merged, deployed btdash
-code, supervised by one human in Slack. It's adapted from Flow's
+code, each ticket steered in Slack by the person who requested it. It's adapted from Flow's
 [factory](https://github.com/freeflow-community/factory) and runs on the
 Bizzybot Slack bridge.
 
@@ -9,7 +9,7 @@ Bizzybot Slack bridge.
 |---|---|---|---|
 | **BzPM** (`@bzpm`) | `pm/` | bizzy-btbot | Product manager. Writes tickets, moves approved ones to Ready and dispatches Builder, reviews and approves PRs, hands them to Merger, and escalates to Human Review. |
 | **Builder** (`@builder`) | `builder/` | Scott (author "Builder") | Takes a Ready ticket and works it in its own Slack channel. Opens the PR, runs the change locally and checks it in a browser, moves the ticket to In Review and reports to BzPM. |
-| **Merger** (`@merger`) | `merger/` | Scott (author "Merger") | Gets approved PRs green, asks Scott for his go, merges, watches the staging/dev (and mobile) deploys go green, and moves the ticket to Done. Never tags production. |
+| **Merger** (`@merger`) | `merger/` | Scott (author "Merger") | Gets approved PRs green, asks the ticket's requester for their go, merges, watches the staging/dev (and mobile) deploys go green, and moves the ticket to Done. Never tags production. |
 
 BzPM reviews as a different GitHub account from the one Builder opens PRs
 with, so its approval satisfies `main`'s one-review rule.
@@ -21,14 +21,14 @@ https://biztrip-team.atlassian.net/jira/software/projects/BP/boards/168
 | Status | Who moves it there | Meaning |
 |---|---|---|
 | **To Do** | BzPM (new tickets) | Written, not yet approved to build |
-| **Ready** | BzPM, on Scott's go | Approved and dispatched, or queued for Scott to pick next |
+| **Ready** | BzPM, on the requester's go | Approved and dispatched, or queued until its requester says to build it |
 | **In Progress** | Builder | Being built, in `#bp-<n>` |
 | **In Review** | Builder | PR open and linked to the ticket; BzPM reviewing |
 | **Done** | Merger | Merged, and the staging/dev deploy is green |
-| **Human Review** | BzPM | Needs Scott: a risky change, a product decision, or something BzPM can't judge |
+| **Human Review** | BzPM | Needs the requester: a risky change, a product decision, or something BzPM can't judge |
 
 ```
-#factory:  Scott ─▶ BzPM: ticket (To Do) ─▶ "Build it?" ─▶ Ready
+#factory:  requester ─▶ BzPM: ticket (To Do) ─▶ "Build it?" ─▶ Ready
                                                    │
                                       "@builder build BP-n"
                                                    ▼
@@ -37,12 +37,10 @@ https://biztrip-team.atlassian.net/jira/software/projects/BP/boards/168
                      └─▶ "@bzpm BP-n is done: PR #x"
                                   │ BzPM reviews here
                                   ├─ approve ─▶ "@merger merge PR #x"
-                                  │             └─▶ CI green ─▶ "@scottp Merge it?" (#factory)
-                                  │                 └─▶ Scott's go ─▶ merge ─▶ deploy green ─▶ Done ─▶ ✅
+                                  │             └─▶ CI green ─▶ "@requester Merge it?" (here)
+                                  │                 └─▶ requester's go ─▶ merge ─▶ deploy green ─▶ Done ─▶ ✅
                                   ├─ changes ─▶ In Progress, "@builder PR #x needs changes"
-                                  └─ needs a human ─▶ Human Review (BzPM tells Scott in #factory)
-
-#factory:  BzPM relays the result to Scott
+                                  └─ needs a human ─▶ Human Review (BzPM asks the requester here)
 ```
 
 Agents use the Atlassian MCP (`mcp__atlassian__*`, site
@@ -50,16 +48,18 @@ Agents use the Atlassian MCP (`mcp__atlassian__*`, site
 
 ## Slack
 
-- **`#factory`**: Scott, BzPM and Merger. Requests, "Build it?", the dispatch
-  to Builder, Merger's "Merge it?" before every merge and Scott's answer,
-  status back to Scott, and anything needing Human Review.
+- **`#factory`**: where requests come in. Requests, BzPM's "Build it?" to
+  whoever asked, and the dispatch to Builder. Nothing about a ticket comes
+  back here once its channel exists, and nobody's ticket waits on Scott
+  unless he requested it.
 - **`#bp-<n>`**: one per ticket, created by Builder, with BzPM, Merger and
   whoever requested the ticket invited — Scott only when the request was his,
   since he doesn't want a channel per request from someone else. The channels
   are public, so anyone can read or join one. Everything about that ticket
   happens here: the plan, a message per finished step, screenshots, the PR,
-  BzPM's review verdict, the merge hand-off, and Merger's result. Post there
-  to steer Builder. Merger adds a ✅ when it's merged.
+  BzPM's review verdict, the merge hand-off, Merger's "Merge it?" to the
+  requester and their answer, any Human Review question, and Merger's result. Post there to steer
+  Builder. Merger adds a ✅ when it's merged.
 
 Every hand-off is one line opening with the target's Slack handle: `@bzpm`,
 `@builder`, `@merger` or `@scottp`. The bridge turns a known handle into a
@@ -68,7 +68,7 @@ a real name with spaces (`@Scott Persinger`) or a hand-typed, HTML-escaped
 token (`&lt;@U…&gt;`) wakes nobody.
 
 Loop guards (enforced by the bridge, restated in each protocol): an agent only
-wakes on a message that mentions it (from Scott or an allowlisted agent). A
+wakes on a message that mentions it (from a person or an allowlisted agent). A
 reply that mentions nobody ends the exchange. A chain of agent-to-agent turns
 stops at `AGENT_CHAIN_LIMIT`.
 
