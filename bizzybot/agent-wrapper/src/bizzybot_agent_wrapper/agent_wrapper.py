@@ -82,6 +82,9 @@ POST_MESSAGE_TOOL = f"mcp__{slack_tools.SERVER_NAME}__post_message"
 
 # Default hosted Central-Dispatch. Override with CENTRAL_URL (env/.env) or the saved config.
 DEFAULT_CENTRAL_URL = "https://central-dispatch.biztrip.ai"
+# Former addresses of the hosted Central-Dispatch. A config saved before it
+# moved still names one, so that saved value falls through to the default.
+RETIRED_CENTRAL_URLS = {"https://claudebot-production-34ba.up.railway.app"}
 
 SLACK_FORMATTING_PROMPT = """\
 Your replies are posted directly to Slack. Format every response in Slack's
@@ -197,7 +200,9 @@ def _forget_token() -> None:
 
 def resolve_central_dispatch() -> str:
     """CENTRAL_URL env > saved config > the default hosted Central-Dispatch."""
-    saved = _load_local_config().get("central_url")
+    saved = (_load_local_config().get("central_url") or "").rstrip("/")
+    if saved in RETIRED_CENTRAL_URLS:
+        saved = ""
     return (os.getenv("CENTRAL_URL") or saved or DEFAULT_CENTRAL_URL).rstrip("/")
 
 
