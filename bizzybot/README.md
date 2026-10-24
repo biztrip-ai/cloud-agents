@@ -7,11 +7,11 @@ Integrate a Claude Code agent into your Slack workspace.
 ## Getting started
 
 The easiest way to run is to use our pre-created Slack app and `central-dispatch` event service which is
-running on Railway. 
+running on AWS (see [docs/DEPLOY-AWS.md](docs/DEPLOY-AWS.md)).
 
 Just visit:
 
-[https://claudebot-production-34ba.up.railway.app](https://claudebot-production-34ba.up.railway.app)
+[https://central-dispatch.biztrip.ai](https://central-dispatch.biztrip.ai)
 
 login with Slack, add the Slack app to your workspace, then run the agent-wrapper on your machine.
 

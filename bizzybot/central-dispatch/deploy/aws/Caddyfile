@@ -1,0 +1,6 @@
+# TLS for Central-Dispatch. DISPATCH_HOST comes from /etc/central-dispatch/host.env
+# (systemd drop-in); Caddy gets and renews the certificate itself. WebSocket
+# upgrades on /ws pass through reverse_proxy unchanged.
+{$DISPATCH_HOST} {
+	reverse_proxy 127.0.0.1:3000
+}

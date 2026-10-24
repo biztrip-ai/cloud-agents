@@ -10,8 +10,9 @@ own records in a private repo.
   `.claude/skills` symlinks to `skills/`.
 - **`bin/agents`**: reads and updates a company's encrypted agent manifest.
 - **`bizzybot/`**: the Bizzybot control plane itself — `central-dispatch/` (the
-  Node server agents dial into, deployed on Railway) and `agent-wrapper/` (the
-  Python bridge each agent box runs, installed with
+  Node server agents dial into, on an AWS EC2 box at
+  https://central-dispatch.biztrip.ai; see `bizzybot/docs/DEPLOY-AWS.md`) and
+  `agent-wrapper/` (the Python bridge each agent box runs, installed with
   `uv tool install "git+https://github.com/biztrip-ai/cloud-agents.git#subdirectory=bizzybot/agent-wrapper"`).
 - **`factory/`**: the BizTrip agent pipeline — one `PROTOCOL.md` per role
   (BzPM, Builder, Merger) that each agent loads through `AGENT_PROMPT_FILE`,
@@ -89,8 +90,11 @@ Rules:
   4. In `journalctl -u agent.service`, look for ✓ on the `preflight` lines and
      for `connected to Central-Dispatch`.
   5. Record the new commit in the manifest.
-- **Central-Dispatch** usually auto-deploys from the bizzybot repo. Restarting an
-  agent while it redeploys produces 502s, so check that the deploy has finished first.
+- **Central-Dispatch** runs on the `central-dispatch` box in the manifest. It
+  does not auto-deploy: after merging a change, run
+  `bin/agents ssh <co> central-dispatch 'sudo /opt/cloud-agents/bizzybot/central-dispatch/deploy/aws/update.sh'`.
+  Agents reconnect on their own. Its SQLite database is replicated to R2 by
+  Litestream; `bizzybot/docs/DEPLOY-AWS.md` has backups, restores and secrets.
 - **Claude auth expired** ("Not logged in"): run
   `bin/agents ssh <co> <agent> 'bash -s start' < skills/provision-cloud-agent/scripts/claude-login.sh`,
   have the user open the URL and paste back the short code, run the same script

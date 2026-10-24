@@ -26,8 +26,9 @@ npm start              # or: npm run dev  (node --watch)
 
 ## Adding a Slack app
 
-Each Slack app (Cosmo, Bizzy, …) is one entry in the `SLACK_APPS` JSON variable
-on Railway. To add apps without retyping every existing app's secrets:
+Each Slack app (Cosmo, Bizzy, …) is one entry in the `SLACK_APPS` JSON variable,
+kept in the `central-dispatch/prod` AWS secret (see `../docs/DEPLOY-AWS.md`). To
+add apps without retyping every existing app's secrets:
 
 ```bash
 ./central-dispatch/scripts/set-slack-apps.sh --append
@@ -36,7 +37,8 @@ on Railway. To add apps without retyping every existing app's secrets:
 It keeps the apps already configured and asks only for the new ones (name, App
 ID, Client ID, Client Secret, Signing Secret — the secrets are read hidden and
 never printed). Re-entering an existing App ID replaces that app in place.
-Without `--append` it replaces the whole list. Railway redeploys to apply it.
+Without `--append` it replaces the whole list. It then restarts Central-Dispatch
+to apply it. (`--target railway` still writes to the old Railway service.)
 
 On the Slack side, give the new app this deployment's manifest (App Manifest →
 paste the JSON from `GET /slack/manifest?name=<AppName>`), then install it from

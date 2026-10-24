@@ -1,0 +1,10 @@
+[Unit]
+Description=Central-Dispatch: load secrets, restore the DB from R2 if missing
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/central-dispatch/host.env
+ExecStart=@APP_DIR@/deploy/aws/prepare.sh

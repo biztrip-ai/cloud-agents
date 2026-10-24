@@ -1,0 +1,22 @@
+[Unit]
+Description=Central-Dispatch (Bizzybot control plane)
+Requires=central-dispatch-prepare.service
+After=central-dispatch-prepare.service
+
+[Service]
+User=dispatch
+Group=dispatch
+WorkingDirectory=@APP_DIR@
+EnvironmentFile=/etc/central-dispatch/config.env
+EnvironmentFile=/run/central-dispatch/app.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/central-dispatch
+
+[Install]
+WantedBy=multi-user.target

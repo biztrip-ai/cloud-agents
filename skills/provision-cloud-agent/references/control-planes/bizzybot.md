@@ -15,7 +15,7 @@ Agent SDK); `gh` on PATH.
   tools generally can't find bot users.
 
 - **Registration token**: the user signs in with Slack at the Central-Dispatch
-  dashboard (hosted: https://claudebot-production-34ba.up.railway.app),
+  dashboard (hosted: https://central-dispatch.biztrip.ai),
   installs one of the Slack apps to the workspace, and copies that agent's
   token from the dashboard. **One token = one agent identity, and
   Central-Dispatch delivers events to the most recent connection for a

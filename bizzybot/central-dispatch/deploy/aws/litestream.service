@@ -1,0 +1,16 @@
+[Unit]
+Description=Litestream: replicate the Central-Dispatch DB to R2
+Requires=central-dispatch-prepare.service
+After=central-dispatch-prepare.service central-dispatch.service
+
+[Service]
+User=dispatch
+Group=dispatch
+EnvironmentFile=/etc/central-dispatch/host.env
+EnvironmentFile=/run/central-dispatch/litestream.env
+ExecStart=/usr/bin/litestream replicate -config /etc/litestream.yml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
