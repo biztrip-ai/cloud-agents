@@ -248,6 +248,8 @@ oss-version/
 
 ## Running on Railway
 
+BizTrip's own deployment has moved to AWS; see [DEPLOY-AWS.md](DEPLOY-AWS.md).
+
 Central-Dispatch is meant to be deployed once and shared by many tenants (Railway is the
 reference host).
 

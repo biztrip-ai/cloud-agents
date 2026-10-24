@@ -81,7 +81,7 @@ FOOTER_LEDGER = FooterLedger(state_path("footers.json"))
 POST_MESSAGE_TOOL = f"mcp__{slack_tools.SERVER_NAME}__post_message"
 
 # Default hosted Central-Dispatch. Override with CENTRAL_URL (env/.env) or the saved config.
-DEFAULT_CENTRAL_URL = "https://claudebot-production-34ba.up.railway.app"
+DEFAULT_CENTRAL_URL = "https://central-dispatch.biztrip.ai"
 
 SLACK_FORMATTING_PROMPT = """\
 Your replies are posted directly to Slack. Format every response in Slack's

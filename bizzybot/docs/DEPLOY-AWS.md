@@ -54,7 +54,7 @@ Scripts run from a laptop, in `central-dispatch/scripts/`:
 | Script | What it does |
 |---|---|
 | `set-dispatch-secret.sh NAME…` | Reads each value hidden and merges it into the Secrets Manager secret. Never prints values. |
-| `set-slack-apps.sh --target aws` | Same as before, but reads and writes `SLACK_APPS` in Secrets Manager and restarts the service |
+| `set-slack-apps.sh` | Reads and writes `SLACK_APPS` in Secrets Manager and restarts the service (`--target railway` for the old service) |
 | `migrate-postgres-to-sqlite.js` | One-time copy of every table from Postgres (Neon) into a fresh SQLite file |
 
 ## Configuration

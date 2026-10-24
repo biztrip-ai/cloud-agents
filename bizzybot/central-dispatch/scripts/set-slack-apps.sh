@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# Interactively build the SLACK_APPS JSON blob and push it to Railway, or with
-# --target aws to Central-Dispatch's AWS secret (see bizzybot/docs/DEPLOY-AWS.md).
+# Interactively build the SLACK_APPS JSON blob and push it to Central-Dispatch's
+# AWS secret (see bizzybot/docs/DEPLOY-AWS.md), or with --target railway to the
+# old Railway service.
 #
 # Prompts for each Slack app (name / App ID / Client ID / Client Secret /
 # Signing Secret), hiding the two secret fields. The value is assembled as valid
 # JSON by node (so odd characters are escaped correctly) and sent over stdin — it never appears in argv, `ps`, or your shell history, and is never
 # printed back.
 #
-# Run it yourself in a terminal:  ./central-dispatch/scripts/set-slack-apps.sh [--append] [--target aws]
+# Run it yourself in a terminal:  ./central-dispatch/scripts/set-slack-apps.sh [--append] [--target railway]
 #
 # With --append, it starts from the apps already in SLACK_APPS and only asks for
 # the new ones, so adding an app doesn't mean re-entering every other app's
@@ -29,7 +30,7 @@ BOX="${DISPATCH_BOX:-central-dispatch}"
 AGENTS_BIN="$(cd "$(dirname "$0")/../../.." && pwd)/bin/agents"
 
 APPEND=0
-TARGET=railway
+TARGET=aws
 while [ $# -gt 0 ]; do
   case "$1" in
     --append) APPEND=1 ;;
