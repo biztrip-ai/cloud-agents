@@ -33,6 +33,9 @@ if (usePg) {
 } else {
   const { DatabaseSync } = await import('node:sqlite');
   sqlite = new DatabaseSync(config.dbPath);
+  // WAL lets readers run during writes and is what Litestream replicates; the
+  // busy timeout rides out Litestream's brief checkpoint locks.
+  sqlite.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;`);
 }
 
 function toPg(sql) {

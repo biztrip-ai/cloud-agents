@@ -1,0 +1,9 @@
+# Litestream config for the Central-Dispatch box. ${…} values come from the
+# environment: R2_* from /etc/central-dispatch/host.env, LITESTREAM_* from the
+# Secrets Manager secret (/run/central-dispatch/litestream.env).
+dbs:
+  - path: /var/lib/central-dispatch/central-dispatch.db
+    replica:
+      url: s3://${R2_BUCKET}/central-dispatch?endpoint=https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
