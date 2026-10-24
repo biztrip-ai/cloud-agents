@@ -4,7 +4,7 @@
 # Launch it with the box's settings inserted after the shebang:
 #
 #   { echo '#!/bin/bash'
-#     echo 'DISPATCH_HOST=dispatch.dev.biztrip.ai R2_ACCOUNT_ID=… R2_BUCKET=…'
+#     echo 'DISPATCH_HOST=central-dispatch.biztrip.ai R2_ACCOUNT_ID=… R2_BUCKET=…'
 #     tail -n +2 user-data.sh; } > /tmp/ud.sh
 #
 # Optional: SECRET_ID (default central-dispatch/prod), AWS_REGION (us-west-2),

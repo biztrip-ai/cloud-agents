@@ -18,7 +18,7 @@ agents ──WSS───▶ │ Caddy :443 ──▶ node src/index.js :3000   
 | Piece | Choice |
 |---|---|
 | Host | EC2 `t4g.micro` (2 vCPU burst, 1 GB, Arm), Ubuntu 24.04, 20 GB gp3, Elastic IP |
-| Hostname | `dispatch.dev.biztrip.ai` (Route 53 zone `dev.biztrip.ai`) |
+| Hostname | `central-dispatch.biztrip.ai` (Cloudflare DNS, A record, DNS only) |
 | TLS | Caddy, with Let's Encrypt certificates it obtains and renews itself |
 | App | `node src/index.js` under systemd as the `dispatch` user, from a checkout of this repo at `/opt/cloud-agents` |
 | Database | SQLite (`node:sqlite`, WAL mode) at `/var/lib/central-dispatch/central-dispatch.db` |
@@ -62,7 +62,7 @@ The box's own settings are in `/etc/central-dispatch/host.env`, written once by
 `user-data.sh` from the values given at launch:
 
 ```
-DISPATCH_HOST=dispatch.dev.biztrip.ai
+DISPATCH_HOST=central-dispatch.biztrip.ai
 R2_ACCOUNT_ID=…
 R2_BUCKET=…
 SECRET_ID=central-dispatch/prod
@@ -143,9 +143,10 @@ Done once, from a laptop with `aws` (admin SSO) and `bin/agents` set up.
 6. **Instance**: `t4g.micro`, Ubuntu 24.04 arm64, 20 GB gp3, IMDSv2 required,
    the instance profile, and `user-data.sh` with the hostname and R2 settings
    prepended. Associate an Elastic IP.
-7. **DNS**: an `A` record `dispatch.dev.biztrip.ai` → the Elastic IP in the
-   `dev.biztrip.ai` Route 53 zone. Caddy gets a certificate once this resolves.
-8. **Verify**: `curl https://dispatch.dev.biztrip.ai/health` returns
+7. **DNS** (Cloudflare): an `A` record `central-dispatch.biztrip.ai` → the Elastic IP,
+   **DNS only** (grey cloud) so Caddy can get its certificate. `*.dev.biztrip.ai`
+   is a wildcard to the dev cluster, so stay out of that subdomain.
+8. **Verify**: `curl https://central-dispatch.biztrip.ai/health` returns
    `{"ok":true}`, `journalctl -u central-dispatch` shows `storage: SQLite`, and
    Litestream shows replication.
 
@@ -179,12 +180,12 @@ switch the URLs back.
    `agent_user_tokens`, `workspace_settings`, `scheduled_tasks`, `dropboxes`)
    and prints row counts per table. Compare them with Neon. Start the service.
 4. **Repoint Slack**: for each Slack app, sync its manifest so the event and
-   OAuth redirect URLs use `https://dispatch.dev.biztrip.ai`
+   OAuth redirect URLs use `https://central-dispatch.biztrip.ai`
    (`GET /slack/manifest?name=<App>` gives the new manifest;
    `slack manifest sync` from the app's project in the private repo).
 5. **Repoint agents**: the wrapper saves `central_url` in its config on first
    run, so changing its default isn't enough. On each agent box, add
-   `CENTRAL_URL=https://dispatch.dev.biztrip.ai` to `/workspaces/env/agent.env`
+   `CENTRAL_URL=https://central-dispatch.biztrip.ai` to `/workspaces/env/agent.env`
    and restart `agent.service`. Check `connected to Central-Dispatch` in its
    journal. Also change `DEFAULT_CENTRAL_URL` in the wrapper for new installs.
 6. **Watch** for a day: messages flowing, scheduled tasks firing, Litestream
