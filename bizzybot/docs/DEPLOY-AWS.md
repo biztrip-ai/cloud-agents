@@ -46,6 +46,7 @@ Everything the box needs is in `central-dispatch/deploy/aws/`:
 | `prepare.sh`, `central-dispatch-prepare.service` | Oneshot before the app: loads secrets, restores the DB from R2 if the file is missing |
 | `central-dispatch.service` | The app |
 | `litestream.service`, `litestream.yml` | Replication to R2 |
+| `litestream.sh` | Runs a litestream command (`ltx`, `restore`, …) with the config and R2 keys loaded |
 | `Caddyfile` | TLS + reverse proxy (WebSockets pass through unchanged) |
 
 Scripts run from a laptop, in `central-dispatch/scripts/`:
@@ -102,17 +103,20 @@ central-dispatch-prepare central-dispatch litestream`.
 - The database holds Slack bot and user tokens and Mailgun keys in plain text.
   Keep the R2 bucket private, and scope its token to that one bucket.
 
-Check replication:
+`deploy/aws/litestream.sh` runs any litestream command with the box's config
+and R2 keys loaded. Check replication:
 
 ```sh
-bin/agents ssh biztrip central-dispatch 'sudo -u dispatch litestream ltx -config /etc/litestream.yml /var/lib/central-dispatch/central-dispatch.db | tail -3'
+LS=/opt/cloud-agents/bizzybot/central-dispatch/deploy/aws/litestream.sh
+DB=/var/lib/central-dispatch/central-dispatch.db
+bin/agents ssh biztrip central-dispatch "sudo $LS ltx $DB | tail -3"
 bin/agents ssh biztrip central-dispatch 'sudo journalctl -u litestream -n 20 --no-pager'
 ```
 
 Test a restore into a scratch path every so often:
 
 ```sh
-bin/agents ssh biztrip central-dispatch 'sudo -u dispatch litestream restore -config /etc/litestream.yml -o /tmp/restore-test.db /var/lib/central-dispatch/central-dispatch.db && sqlite3 /tmp/restore-test.db "select count(*) from agents" && rm /tmp/restore-test.db'
+bin/agents ssh biztrip central-dispatch "sudo $LS restore -o /tmp/restore-test.db $DB && sudo sqlite3 /tmp/restore-test.db 'select count(*) from agents'; sudo rm -f /tmp/restore-test.db*"
 ```
 
 ## Provisioning
