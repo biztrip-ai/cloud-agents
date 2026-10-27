@@ -97,9 +97,14 @@ The ticket channel is the running record; anyone posting there is steering you.
     is no GIF recorder: commit PNG screenshots to `screenshots/` on the PR
     branch and link them with absolute raw URLs, as that skill describes.
 - **Verify for real.**
-  - Run the CI commands from `dev-workflow` for every side you touched: the
-    frontend `pnpm test:ci --silent`, and the backend `uv run pytest -m "not
-    (sabre or google or eval or llm or geo or minio)"`.
+  - Run the tests for what you changed: the test files for the modules you
+    touched and for the code that uses them (`uv run pytest tests/...`,
+    `pnpm jest <files>`). Say in the PR description which ones you ran.
+  - Leave the full suite to CI, which runs it in parallel shards. Run it
+    here, with the CI commands in `dev-workflow` (copy them from there, not
+    from memory), only when the change is cross-cutting (`conftest.py` or
+    shared fixtures, models, migrations, app-wide config) or to reproduce a
+    CI failure.
   - Then run the change and look at it, locally on this box. Follow
     `.claude/skills/local-stack/SKILL.md`: the data plane (postgres/redis/
     minio) is already up, and your worktree carries its own leased ports in

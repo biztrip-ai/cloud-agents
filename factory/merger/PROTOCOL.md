@@ -34,8 +34,9 @@ an **empty** final reply; whatever you output is posted.
    - Check it out in a worktree (`git worktree add ../btdash-merge-<n> <branch>`)
      and run `git merge origin/main`.
    - Resolve each conflict in a way that keeps both sides' intent.
-   - Verify the merged result by running the `dev-workflow` CI commands for
-     the sides touched, then push the branch.
+   - Verify the merged result by running the tests for the files that had
+     conflicts and the code that uses them, then push the branch. CI runs the
+     full suite.
 3. Wait for the required checks (Backend Tests, Frontend Tests, Mobile Tests,
    E2E, Migration Validation, Pre-commit, as applicable). Post one line first
    saying you're waiting on CI for PR #<n>, then run:
