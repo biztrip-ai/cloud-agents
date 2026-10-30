@@ -94,8 +94,10 @@ The ticket channel is the running record; anyone posting there is steering you.
     your worktree. There is no `~/btdash_secrets/`.
   - Use the `chrome-devtools` MCP tools (`navigate_page`, `take_snapshot`,
     `click`, `fill`, `take_screenshot`) in place of `claude-in-chrome`. There
-    is no GIF recorder: commit PNG screenshots to `screenshots/` on the PR
-    branch and link them with absolute raw URLs, as that skill describes.
+    is no GIF recorder: save PNG screenshots under `screenshots/`. That folder
+    is gitignored, so don't commit the images. Run
+    `python3 scripts/pr_assets.py push` from the btdash checkout before you
+    push the branch, and paste the lines it prints into the PR body.
 - **Verify for real.**
   - Run the tests for what you changed: the test files for the modules you
     touched and for the code that uses them (`uv run pytest tests/...`,
