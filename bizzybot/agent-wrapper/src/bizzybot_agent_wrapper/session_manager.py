@@ -28,6 +28,7 @@ from claude_agent_sdk.types import (
     UserMessage,
 )
 
+from . import sabre_approval
 from .paths import state_path
 
 log = logging.getLogger("claude-slack-bot.session")
@@ -796,6 +797,7 @@ class SessionManager:
         max_buffer_size: Optional[int] = None,
         idle_timeout_s: Optional[float] = None,
         reap_interval_s: float = 300.0,
+        sabre_approver: Optional[sabre_approval.SabreWriteApprover] = None,
     ):
         self._cwd = cwd
         self._permission_mode = permission_mode
@@ -825,6 +827,9 @@ class SessionManager:
         # raise it or a screenshot turn dies with "JSON message exceeded maximum
         # buffer size". None => SDK default.
         self._max_buffer_size = max_buffer_size
+        # Gates production Sabre writes behind a Slack reaction. None disables
+        # the gate entirely.
+        self._sabre_approver = sabre_approver
         self._sessions: dict[str, Session] = {}
         self._lock = asyncio.Lock()
         # Called with the thread key whenever a sub-agent in that thread stops
@@ -880,13 +885,56 @@ class SessionManager:
 
         return _on_subagent_stop
 
+    def _make_sabre_write_hook(self, key: str):
+        """A PreToolUse hook bound to one thread key, so the production-write
+        gate knows which Slack thread to ask by construction. `can_use_tool` is
+        never called under bypassPermissions; a PreToolUse hook still fires."""
+        approver = self._sabre_approver
+
+        async def _on_pre_tool_use(input_data, tool_use_id, context) -> dict:
+            try:
+                decision = await approver.decide(
+                    key,
+                    str(input_data.get("tool_name") or ""),
+                    dict(input_data.get("tool_input") or {}),
+                )
+            except Exception:  # noqa: BLE001 — a broken gate must not open it
+                log.exception("Sabre write gate failed for %s", key)
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            "The production Sabre write gate errored, so this call "
+                            "was blocked. Tell the human in this thread."
+                        ),
+                    }
+                }
+            if not decision:
+                return {}
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", **decision}}
+
+        return _on_pre_tool_use
+
     def _build_options(self, key: str, resume: Optional[str] = None) -> ClaudeAgentOptions:
+        hooks: dict = {
+            "SubagentStop": [HookMatcher(hooks=[self._make_subagent_stop_hook(key)])]
+        }
+        if self._sabre_approver is not None:
+            hooks["PreToolUse"] = [
+                HookMatcher(
+                    matcher=sabre_approval.TOOL_MATCHER,
+                    hooks=[self._make_sabre_write_hook(key)],
+                    # The gate does its own waiting; this only bounds a hook that
+                    # hangs past it, and an overrun blocks the call rather than
+                    # letting it through.
+                    timeout=sabre_approval.TIMEOUT_S + 60,
+                )
+            ]
         kwargs: dict = {
             "cwd": self._cwd,
             "permission_mode": self._permission_mode,
-            "hooks": {
-                "SubagentStop": [HookMatcher(hooks=[self._make_subagent_stop_hook(key)])]
-            },
+            "hooks": hooks,
         }
         if resume:
             kwargs["resume"] = resume
