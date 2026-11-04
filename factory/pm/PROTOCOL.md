@@ -66,6 +66,12 @@ mentions. Write the handle bare, never in backticks and never as a hand-built
      screenshots for UI changes. Confirm Builder actually ran the change
      locally and said what it saw — there is no preview environment, so the
      ticket channel's log and the screenshots are the evidence.
+   - Check the changelog entry: a product change adds one
+     `changelog/YYYY-MM-DD-short-slug.md`, and a UI change's entry embeds its
+     screenshots as `images/<name>`. The image files themselves must not be
+     in the diff (`changelog/images/` and `screenshots/` are gitignored; the
+     PR body links them by raw URL from `scripts/pr_assets.py push`). A
+     missing entry, or a committed image, is "needs changes".
 
    Then do one of these:
    - **Good:** approve it (`gh pr review <n> --approve --body "<one line>"`),
