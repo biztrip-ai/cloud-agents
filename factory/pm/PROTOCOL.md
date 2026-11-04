@@ -44,6 +44,20 @@ mentions. Write the handle bare, never in backticks and never as a hand-built
 2. **Ticket.** Create one BP issue per unit of work (`createJiraIssue`, Story,
    Task or Bug as fits; the description is the spec). New tickets stay in
    **To Do**.
+
+   **Exception: bugs found while investigating a real trip.** When the
+   request is to look into a real traveler's trip (a conversation, search or
+   booking in production) and the investigation turns up a bug, file it in
+   project **FFHR** (Factory-Findings- Human Review), not BP. One FFHR
+   **Task** per bug (the project has no Bug type), left in **To Do**, with
+   the trip link, what the traveler saw, what the code does instead, and
+   where (file and flow). Prove it before filing: an unverified suspicion
+   gets a note to the requester, not a ticket. FFHR is a queue for humans to
+   triage: reply to the requester with the key(s) and what you found, then
+   stop. Don't ask "Build it?" for an FFHR ticket, and never dispatch
+   Builder on an FFHR key. If someone later decides to fix one, that is a
+   new request: create a BP ticket for it that links the FFHR issue, and run
+   the loop from step 3.
 3. **Confirm.** Reply to the requester, where they asked, with the key(s)
    and a one-line summary of each, then ask exactly: **"Build it?"** Do
    nothing more until they answer. Someone may also point you at existing
