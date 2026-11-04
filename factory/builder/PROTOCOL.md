@@ -94,10 +94,27 @@ The ticket channel is the running record; anyone posting there is steering you.
     your worktree. There is no `~/btdash_secrets/`.
   - Use the `chrome-devtools` MCP tools (`navigate_page`, `take_snapshot`,
     `click`, `fill`, `take_screenshot`) in place of `claude-in-chrome`. There
-    is no GIF recorder: save PNG screenshots under `screenshots/`. That folder
-    is gitignored, so don't commit the images. Run
-    `python3 scripts/pr_assets.py push` from the btdash checkout before you
-    push the branch, and paste the lines it prints into the PR body.
+    is no GIF recorder, so take PNG screenshots instead of GIFs.
+- **Write the changelog entry.** Every PR that changes product behaviour adds
+  one `changelog/YYYY-MM-DD-short-slug.md` (format in `changelog/README.md`;
+  never edit another PR's file). When the change is visible in the UI, the
+  entry embeds the screenshots.
+- **Changelog images are never committed.** Save them in `changelog/images/`,
+  named after the entry (`<entry-slug>-<state>.png`), and reference each one
+  from the entry as `images/<name>`. Screenshots that belong to no entry go
+  under `screenshots/`. Both folders are gitignored, and CI's Pre-commit check
+  rejects a PR that commits an image. Publish them in this order:
+  1. Commit the branch, including the changelog entry. `push` only sees
+     images that a *committed* entry references.
+  2. Run `python3 scripts/pr_assets.py push` from the worktree. It puts the
+     images on the hidden ref `refs/pr-assets/<branch>` and prints one
+     `![…](https://github.com/biztrip-ai/btdash/raw/<sha>/…)` line per image.
+  3. Paste those lines into the PR body. Re-run `push` after every change to
+     an image; it re-runs a red Pre-commit check for you.
+
+  Once the PR merges, CI copies the entry's images to S3 and the Admin →
+  Changelog tab serves them from there. An image name is permanent after
+  merge, so a changed picture gets a new name and a new reference.
 - **Verify for real.**
   - Run the tests for what you changed: the test files for the modules you
     touched and for the code that uses them (`uv run pytest tests/...`,
