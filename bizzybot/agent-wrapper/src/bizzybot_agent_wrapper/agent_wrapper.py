@@ -44,6 +44,7 @@ from . import (
     passive,
     pr_poller,
     private_dm,
+    sabre_approval,
     scheduled,
     sentry_poller,
     shell_exec,
@@ -382,10 +383,35 @@ def sponsor_prompt(sponsor_id: str, label: str) -> str:
     )
 
 
+def sabre_approval_config(
+    settings: dict[str, str],
+    mcp_servers: dict[str, dict],
+    sponsor_id: Optional[str],
+) -> tuple[str, frozenset[str]]:
+    """(default Sabre env, approver allowlist) for the production-write gate.
+
+    The wrapper cannot read the MCP server's process environment, so it works
+    out what that server will start with. The `env` block of its own entry in
+    the claude CLI config wins, because that overrides whatever the subprocess
+    inherits; then SABRE_ENV from the wrapper's environment or settings file,
+    which is the same value that gets passed through to the subprocess; then
+    the MCP server's own `moderna` default, which is production — an
+    unconfigured box is gated, not waved through.
+    """
+    entry = mcp_servers.get(sabre_approval.SERVER_NAME) or {}
+    pinned = (entry.get("env") or {}).get("SABRE_ENV")
+    env = (pinned or resolve(settings, "SABRE_ENV") or sabre_approval.DEFAULT_ENV).strip()
+    approvers = sabre_approval.parse_approvers(
+        resolve(settings, "SABRE_WRITE_APPROVERS"), sponsor_id
+    )
+    return env, approvers
+
+
 def build_session_manager(
     settings: Optional[dict[str, str]] = None,
     slack: Optional[AsyncWebClient] = None,
     sponsor_prompt_line: Optional[str] = None,
+    sponsor_id: Optional[str] = None,
 ) -> SessionManager:
     extra_args: dict[str, str | None] = {}
     # Chrome (Claude-in-Chrome browser MCP) is on by default so target envs don't
@@ -414,7 +440,16 @@ def build_session_manager(
     # The user's settings file (~/.bizzybot/settings.env) — passed through to
     # each claude subprocess, and the source of an alternate model provider.
     # main() loads it once and passes it in, so it isn't parsed (and logged) twice.
-    env, provider_model = claude_env(load_settings() if settings is None else settings)
+    settings = load_settings() if settings is None else settings
+    env, provider_model = claude_env(settings)
+    # Production Sabre writes pause for a human reaction in the thread that
+    # asked for them. Built even without a Slack client: with nobody to ask,
+    # every production write falls back to cert rather than going through.
+    sabre_env, sabre_approvers = sabre_approval_config(settings, mcp_servers, sponsor_id)
+    log.info(
+        "Sabre write gate: default env %s, %d approver(s)",
+        sabre_env, len(sabre_approvers),
+    )
     model = os.getenv("CLAUDE_MODEL") or None
     if provider_model:
         # An Anthropic model id would 404 at OpenRouter, so the provider's model
@@ -445,6 +480,9 @@ def build_session_manager(
         # resumes the conversation.
         idle_timeout_s=float(os.getenv("SESSION_IDLE_TIMEOUT_S", str(4 * 3600))),
         reap_interval_s=float(os.getenv("SESSION_REAP_INTERVAL_S", "300")),
+        sabre_approver=sabre_approval.SabreWriteApprover(
+            slack, default_env=sabre_env, approvers=sabre_approvers
+        ),
     )
 
 
@@ -1743,7 +1781,7 @@ async def main() -> None:
                 env=shell_env,
             )
             log.info("!! shell commands enabled for the sponsor")
-        sessions = build_session_manager(settings, slack, sponsor_line)
+        sessions = build_session_manager(settings, slack, sponsor_line, sponsor_id or None)
         sessions.start_reaper()
         await FOOTER_LEDGER.sweep(slack)
 
