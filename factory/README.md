@@ -1,7 +1,8 @@
 # Factory: btdash's agent pipeline
 
-Three always-on cloud agents turn Jira tickets into merged, deployed btdash
-code, each ticket steered in Slack by the person who requested it. It's adapted from Flow's
+Four always-on cloud agents turn Jira tickets into merged, deployed btdash
+code, each ticket steered in Slack by the person who requested it, and then
+check that what shipped works. It's adapted from Flow's
 [factory](https://github.com/freeflow-community/factory) and runs on the
 Bizzybot Slack bridge.
 
@@ -10,6 +11,7 @@ Bizzybot Slack bridge.
 | **BzPM** (`@bzpm`) | `pm/` | bizzy-btbot | Product manager. Writes tickets, moves approved ones to Ready and dispatches Builder, reviews and approves PRs, hands them to Merger, and escalates to Human Review. |
 | **Builder** (`@builder`) | `builder/` | Scott (author "Builder") | Takes a Ready ticket and works it in its own Slack channel. Opens the PR, runs the change locally and checks it in a browser, moves the ticket to In Review and reports to BzPM. |
 | **Merger** (`@merger`) | `merger/` | Scott (author "Merger") | Gets approved PRs green, asks the ticket's requester for their go, merges, watches the staging/dev (and mobile) deploys go green, and moves the ticket to Done. Never tags production. |
+| **Tester** (`@tester`) | `tester/` | — (never commits) | Post-release checker. Starts where Merger stops: once BzPM says a production deploy has landed, works out what shipped, tests it as a real traveler on production, and reports pass / fail / couldn't test. Never fixes, merges or files tickets. |
 
 BzPM reviews as a different GitHub account from the one Builder opens PRs
 with, so its approval satisfies `main`'s one-review rule.
@@ -62,10 +64,10 @@ Agents use the Atlassian MCP (`mcp__atlassian__*`, site
   Builder. Merger adds a ✅ when it's merged.
 
 Every hand-off is one line opening with the target's Slack handle: `@bzpm`,
-`@builder`, `@merger` or `@scottp`. The bridge turns a known handle into a
-real `<@U…>` mention, so that is what wakes the target; a handle in backticks,
-a real name with spaces (`@Scott Persinger`) or a hand-typed, HTML-escaped
-token (`&lt;@U…&gt;`) wakes nobody.
+`@builder`, `@merger`, `@tester` or `@scottp`. The bridge turns a known handle
+into a real `<@U…>` mention, so that is what wakes the target; a handle in
+backticks, a real name with spaces (`@Scott Persinger`) or a hand-typed,
+HTML-escaped token (`&lt;@U…&gt;`) wakes nobody.
 
 Loop guards (enforced by the bridge, restated in each protocol): an agent only
 wakes on a message that mentions it (from a person or an allowlisted agent). A
@@ -87,10 +89,10 @@ happens.
 ### Deploying a protocol change
 
 Nothing pulls the checkouts automatically, so a merged protocol change does
-nothing until you roll it out. After merging, pull `main` on all three boxes:
+nothing until you roll it out. After merging, pull `main` on all four boxes:
 
 ```sh
-for a in BzPM Builder Merger; do
+for a in BzPM Builder Merger Tester; do
   bin/agents ssh biztrip $a \
     'cd /workspaces/projects/cloud-agents && git pull --ff-only -q && git log --oneline -1'
 done
@@ -110,10 +112,10 @@ the Atlassian MCP registered as `atlassian`. Per agent:
 
 1. Merge `<role>/agent.env.example` into the box's `/workspaces/env/agent.env`.
    These settings aren't secret; secrets come through `bizzybot-dropbox`.
-2. Fill in the Slack user IDs of the other two agents (`AGENT_MENTIONS_FROM`).
+2. Fill in the Slack user IDs of the other agents (`AGENT_MENTIONS_FROM`).
 3. Restart the agent service.
 
-Create `#factory` once and invite the three agents.
+Create `#factory` once and invite the four agents.
 
 **Requires Bizzybot with:** agent-to-agent mentions (`AGENT_MENTIONS_FROM`,
 `AGENT_CHAIN_LIMIT`), `AGENT_PROMPT_FILE`, `@handle` mention resolution
